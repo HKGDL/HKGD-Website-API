@@ -9,7 +9,7 @@ echo "Generating self-signed SSL certificate..."
 openssl req -x509 -newkey rsa:4096 -keyout $CERT_DIR/key.pem -out $CERT_DIR/cert.pem \
   -days 365 -nodes \
   -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost,DNS:*.ddns.net,IP:127.0.0.1"
+  -addext "subjectAltName=DNS:localhost,DNS:hkgdl.ddns.net,IP:127.0.0.1"
 
 echo "Certificates generated successfully in $CERT_DIR/"
 echo ""
