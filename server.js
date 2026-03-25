@@ -32,13 +32,12 @@ const PORT = process.env.PORT || 19132;
 // Set this to 'true' if behind a proxy like nginx
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? true : false);
 
-// JWT Secret - 在生产环境中应该使用环境变量
+// JWT Secret - should be set in environment variables
 const JWT_SECRET = process.env.JWT_SECRET || 'hkgd-secret-key-2024';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'hkgdadmin2024';
 
 console.log('=== SERVER CONFIGURATION ===');
-console.log('Admin password loaded from .env:', ADMIN_PASSWORD);
-console.log('Password length:', ADMIN_PASSWORD.length);
+console.log('Admin password loaded');
 console.log('============================');
 
 // IP封禁管理
@@ -185,6 +184,7 @@ const authLimiter = rateLimit({
 
 // Apply rate limiting only to pending-submissions endpoint
 app.use('/api/pending-submissions', apiLimiter);
+app.use('/api/auth/login', authLimiter);
 
 // Serve static files from the dist directory (production build)
 app.use(express.static(join(__dirname, 'dist')));
@@ -310,7 +310,6 @@ db.exec(`
 
 // 认证端点
 app.post('/api/auth/login',
-  authLimiter,
   checkIPBan,
   body('password').notEmpty().trim().isLength({ min: 1, max: 128 }),
   validateRequest,
@@ -324,26 +323,7 @@ app.post('/api/auth/login',
     const sessionId = req.cookies?.hkgd_session_id || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const sessionKey = isLocalhost ? `ip_${ip}` : sessionId;
 
-    console.log('=== LOGIN ATTEMPT DEBUG ===');
-    console.log('Raw headers:', {
-      'x-forwarded-for': req.headers['x-forwarded-for'],
-      'x-real-ip': req.headers['x-real-ip'],
-      'socket.remoteAddress': req.socket.remoteAddress
-    });
-    console.log('Detected IP:', ip);
-    console.log('Is localhost:', isLocalhost);
-    console.log('Session ID from cookie:', req.cookies?.hkgd_session_id);
-    console.log('Generated Session ID:', sessionId);
-    console.log('Session key for tracking:', sessionKey);
-    console.log('All cookies:', req.cookies);
-    console.log('Current bannedIPs state:', Array.from(bannedIPs.entries()));
-    console.log('Current sessionAttempts state:', Array.from(sessionAttempts.entries()));
-    console.log('=== PASSWORD COMPARISON ===');
-    console.log('Submitted password:', `"${password}"`);
-    console.log('Expected password:', `"${ADMIN_PASSWORD}"`);
-    console.log('Passwords match:', password === ADMIN_PASSWORD);
-    console.log('Password lengths:', password.length, 'vs', ADMIN_PASSWORD.length);
-    console.log('===========================');
+    console.log(`Login attempt from IP: ${ip}`);
 
     if (password === ADMIN_PASSWORD) {
       // 登录成功，重置失败的尝试
@@ -388,13 +368,7 @@ app.post('/api/auth/login',
       const sessionInfo = sessionAttempts.get(sessionKey);
       const effectiveAttempts = sessionInfo ? sessionInfo.attempts : banInfo.attempts;
 
-      console.log('=== FAILED LOGIN DEBUG ===');
-      console.log('banInfo:', banInfo);
-      console.log('sessionInfo:', sessionInfo);
-      console.log('Session key:', sessionKey);
-      console.log('Effective attempts:', effectiveAttempts);
-      console.log('Attempts remaining:', MAX_LOGIN_ATTEMPTS - effectiveAttempts);
-      console.log('===========================');
+      console.log(`Failed login attempt. IP: ${ip}, Attempts: ${effectiveAttempts}/${MAX_LOGIN_ATTEMPTS}`);
 
       // Set session ID cookie on failed login too
       const isProduction = process.env.NODE_ENV === 'production';
@@ -420,7 +394,7 @@ app.post('/api/auth/login',
 });
 
 // 验证 token 端点
-app.post('/api/auth/verify', authenticateToken, (req, res) => {
+app.post('/api/auth/verify', authLimiter, authenticateToken, (req, res) => {
   res.json({
     success: true,
     user: req.user
@@ -428,7 +402,7 @@ app.post('/api/auth/verify', authenticateToken, (req, res) => {
 });
 
 // Logout endpoint - clears the authentication cookie
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', authLimiter, (req, res) => {
   res.clearCookie('hkgd_admin_token', {
     path: '/',
   });
@@ -648,8 +622,19 @@ app.post('/api/levels/:levelId/records',
     console.log('Adding record to level:', req.params.levelId);
     console.log('Record data:', { player, date, videoUrl, fps, cbf, attempts });
 
-    // Validate videoUrl
-    const validVideoUrl = videoUrl && videoUrl.length > 10 ? videoUrl : 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+    // Validate videoUrl - require a valid URL, reject if missing/invalid
+    if (!videoUrl || videoUrl.length < 10) {
+      return res.status(400).json({ error: 'Valid video URL is required' });
+    }
+
+    // Basic URL validation
+    try {
+      new URL(videoUrl);
+    } catch {
+      return res.status(400).json({ error: 'Invalid URL format' });
+    }
+
+    const validVideoUrl = videoUrl;
 
     const result = db.prepare(`
       INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
