@@ -772,7 +772,7 @@ app.get('/api/content', (req, res) => {
         },
         footer: {
           description: "The official demon list for the Hong Kong Geometry Dash community. Tracking the hardest Extreme Demon levels beaten by our members.",
-          credits: "Made with love by HKGD Community • Made By lh201202729 and yorklui"
+          credits: "Made with love by HKGD Community"
         }
       };
       res.json(defaultContent);
