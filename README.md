@@ -96,4 +96,4 @@ Or use Let's Encrypt for production certificates.
 
 ## License
 
-ISC
+[Dont Be A Dick (DBAD) Public License](DBAD.md)
