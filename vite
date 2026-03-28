@@ -1,0 +1,14 @@
+
+failed to load config from /home/lh201202729/Downloads/HKGD prev/frontend/vite.config.ts
+error when starting dev server:
+Error: EACCES: permission denied, open '/etc/letsencrypt/live/hkgdl.ddns.net/privkey.pem'
+    at Object.openSync (node:fs:555:18)
+    at Object.readFileSync (node:fs:439:35)
+    at file:///home/lh201202729/Downloads/HKGD%20prev/frontend/node_modules/.vite-temp/vite.config.ts.timestamp-1774513074737-bde4402e24e28.mjs:21:15
+    at ModuleJob.run (node:internal/modules/esm/module_job:413:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:654:26)
+    at async loadConfigFromBundledFile (file:///home/lh201202729/Downloads/HKGD%20prev/frontend/node_modules/vite/dist/node/chunks/config.js:35907:12)
+    at async bundleAndLoadConfigFile (file:///home/lh201202729/Downloads/HKGD%20prev/frontend/node_modules/vite/dist/node/chunks/config.js:35795:17)
+    at async loadConfigFromFile (file:///home/lh201202729/Downloads/HKGD%20prev/frontend/node_modules/vite/dist/node/chunks/config.js:35762:42)
+    at async resolveConfig (file:///home/lh201202729/Downloads/HKGD%20prev/frontend/node_modules/vite/dist/node/chunks/config.js:35411:22)
+    at async _createServer (file:///home/lh201202729/Downloads/HKGD%20prev/frontend/node_modules/vite/dist/node/chunks/config.js:25361:67)curl -k https://localhost:8081

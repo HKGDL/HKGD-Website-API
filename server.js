@@ -424,7 +424,7 @@ app.get('/api/levels', (req, res) => {
     // Get records for each level
     const levelsWithRecords = levels.map(level => {
       const records = db.prepare(`
-        SELECT player, date, video_url as videoUrl, fps, cbf, attempts
+        SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts
         FROM records
         WHERE level_id = ?
         ORDER BY date DESC
@@ -471,7 +471,7 @@ app.get('/api/levels/:id', (req, res) => {
     }
 
     const records = db.prepare(`
-            SELECT player, date, video_url as videoUrl, fps, cbf, attempts
+            SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts
             FROM records
             WHERE level_id = ?
             ORDER BY date DESC
@@ -646,6 +646,81 @@ app.post('/api/levels/:levelId/records',
   } catch (error) {
     console.error('Error adding record:', error);
     res.status(500).json({ error: 'Failed to add record' });
+  }
+});
+
+// Update a record
+app.put('/api/records/:recordId',
+  authenticateToken,
+  param('recordId').isInt({ min: 1 }),
+  body('player').optional().trim().isLength({ min: 1, max: 50 }).escape(),
+  body('date').optional().isISO8601(),
+  body('videoUrl').optional().isURL().isLength({ max: 500 }),
+  body('fps').optional().trim().isLength({ max: 20 }),
+  body('cbf').optional().isBoolean(),
+  body('attempts').optional().isInt({ min: 0 }),
+  validateRequest,
+  (req, res) => {
+  try {
+    const { player, date, videoUrl, fps, cbf, attempts } = req.body;
+    const recordId = req.params.recordId;
+
+    console.log('Updating record:', recordId);
+
+    // Check if record exists
+    const existingRecord = db.prepare('SELECT id FROM records WHERE id = ?').get(recordId);
+    if (!existingRecord) {
+      return res.status(404).json({ error: 'Record not found' });
+    }
+
+    // Build dynamic update query
+    const updates = [];
+    const values = [];
+
+    if (player !== undefined) { updates.push('player = ?'); values.push(player); }
+    if (date !== undefined) { updates.push('date = ?'); values.push(date); }
+    if (videoUrl !== undefined) { updates.push('video_url = ?'); values.push(videoUrl); }
+    if (fps !== undefined) { updates.push('fps = ?'); values.push(fps); }
+    if (cbf !== undefined) { updates.push('cbf = ?'); values.push(cbf ? 1 : 0); }
+    if (attempts !== undefined) { updates.push('attempts = ?'); values.push(attempts); }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(recordId);
+    db.prepare(`UPDATE records SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+
+    console.log('Record updated successfully');
+    res.json({ message: 'Record updated successfully' });
+  } catch (error) {
+    console.error('Error updating record:', error);
+    res.status(500).json({ error: 'Failed to update record' });
+  }
+});
+
+// Delete a record
+app.delete('/api/records/:recordId',
+  authenticateToken,
+  param('recordId').isInt({ min: 1 }),
+  validateRequest,
+  (req, res) => {
+  try {
+    const recordId = req.params.recordId;
+
+    console.log('Deleting record:', recordId);
+
+    const result = db.prepare('DELETE FROM records WHERE id = ?').run(recordId);
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Record not found' });
+    }
+
+    console.log('Record deleted successfully');
+    res.json({ message: 'Record deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting record:', error);
+    res.status(500).json({ error: 'Failed to delete record' });
   }
 });
 
