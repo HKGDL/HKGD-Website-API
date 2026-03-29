@@ -1,0 +1,35 @@
+name = "hkgd-api"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# === D1 Database Configuration ===
+# Create the database first: wrangler d1 create hkgd-db
+# Then update the database_id below with the actual ID from the output
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hkgd-db"
+database_id = "38dec10e-48f3-4817-b227-a825752d9f68"
+
+# === Environment Variables ===
+[vars]
+ENVIRONMENT = "production"
+
+# Secrets (set via: wrangler secret put JWT_SECRET)
+# JWT_SECRET - your JWT signing secret
+# ADMIN_PASSWORD - your admin login password
+
+# === Custom Domain ===
+[[routes]]
+pattern = "api.hkgdl.dpdns.org/*"
+zone_name = "hkgdl.dpdns.org"
+
+# === Local Development ===
+[dev]
+port = 8787
+local_protocol = "http"
+
+# === Production Settings ===
+[observability]
+enabled = true
