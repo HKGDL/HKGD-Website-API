@@ -159,6 +159,7 @@ app.post('/api/auth/logout', async (c) => {
 
 app.get('/api/levels', async (c) => {
   try {
+    // Single query for all levels
     const levels = await c.env.DB.prepare(`
       SELECT
         id, hkgd_rank as hkgdRank, aredl_rank as aredlRank, pemonlist_rank as pemonlistRank,
@@ -169,24 +170,29 @@ app.get('/api/levels', async (c) => {
       ORDER BY hkgd_rank ASC
     `).all();
     
-    // Get records for each level
-    const levelsWithRecords = await Promise.all(
-      (levels.results || []).map(async (level: any) => {
-        const records = await c.env.DB.prepare(`
-          SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts
-          FROM records
-          WHERE level_id = ?
-          ORDER BY date DESC
-        `).bind(level.id).all();
-        
-        return {
-          ...level,
-          songName: level.songName && level.songName !== 'undefined by undefined' ? level.songName : null,
-          tags: level.tags ? JSON.parse(level.tags) : [],
-          records: (records.results || []).map((r: any) => ({ ...r, cbf: r.cbf === 1 }))
-        };
-      })
-    );
+    // Single query for ALL records (instead of N+1 queries)
+    const allRecords = await c.env.DB.prepare(`
+      SELECT id, level_id, player, date, video_url as videoUrl, fps, cbf, attempts
+      FROM records
+      ORDER BY date DESC
+    `).all();
+    
+    // Group records by level_id in memory
+    const recordsByLevel: Record<string, any[]> = {};
+    for (const r of (allRecords.results || [])) {
+      if (!recordsByLevel[r.level_id as string]) {
+        recordsByLevel[r.level_id as string] = [];
+      }
+      recordsByLevel[r.level_id as string].push({ ...r, cbf: r.cbf === 1 });
+    }
+    
+    // Combine levels with their records
+    const levelsWithRecords = (levels.results || []).map((level: any) => ({
+      ...level,
+      songName: level.songName && level.songName !== 'undefined by undefined' ? level.songName : null,
+      tags: level.tags ? JSON.parse(level.tags) : [],
+      records: recordsByLevel[level.id] || []
+    }));
     
     return c.json(levelsWithRecords);
   } catch (error) {
