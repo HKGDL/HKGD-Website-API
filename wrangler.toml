@@ -4,9 +4,6 @@ compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # === D1 Database Configuration ===
-# Create the database first: wrangler d1 create hkgd-db
-# Then update the database_id below with the actual ID from the output
-
 [[d1_databases]]
 binding = "DB"
 database_name = "hkgd-db"
@@ -20,9 +17,13 @@ ENVIRONMENT = "production"
 # JWT_SECRET - your JWT signing secret
 # ADMIN_PASSWORD - your admin login password
 
-# === Custom Domain ===
+# === Custom Domain Routes ===
 [[routes]]
 pattern = "api.hkgdl.dpdns.org/*"
+zone_name = "hkgdl.dpdns.org"
+
+[[routes]]
+pattern = "hkgdl.dpdns.org/api/*"
 zone_name = "hkgdl.dpdns.org"
 
 # === Local Development ===
