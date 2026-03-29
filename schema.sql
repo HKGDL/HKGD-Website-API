@@ -88,6 +88,13 @@ CREATE TABLE IF NOT EXISTS ip_bans (
   updated_at INTEGER
 );
 
+-- Settings table (for site-wide settings)
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_levels_hkgd_rank ON levels(hkgd_rank);
 CREATE INDEX IF NOT EXISTS idx_records_level_id ON records(level_id);

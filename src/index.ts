@@ -513,6 +513,43 @@ app.get('/api/platformer-demons', async (c) => {
   }
 });
 
+// === SETTINGS ROUTES ===
+
+app.get('/api/settings', async (c) => {
+  try {
+    const settings = await c.env.DB.prepare('SELECT key, value FROM settings').all();
+    const settingsMap: Record<string, boolean> = {};
+    for (const s of (settings.results || [])) {
+      settingsMap[s.key as string] = s.value === 'true';
+    }
+    return c.json(settingsMap);
+  } catch (error) {
+    console.error('Error fetching settings:', error);
+    return c.json({ error: 'Failed to fetch settings' }, 500);
+  }
+});
+
+app.put('/api/settings/:key', authenticateToken, async (c) => {
+  try {
+    const key = c.req.param('key');
+    const { value } = await c.req.json();
+    const updated_at = new Date().toISOString();
+    
+    await c.env.DB.prepare(`
+      INSERT INTO settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `).bind(key, value ? 'true' : 'false', updated_at).run();
+    
+    return c.json({ message: 'Setting updated successfully', key, value });
+  } catch (error) {
+    console.error('Error updating setting:', error);
+    return c.json({ error: 'Failed to update setting' }, 500);
+  }
+});
+
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
