@@ -550,6 +550,115 @@ app.put('/api/settings/:key', authenticateToken, async (c) => {
   }
 });
 
+// === AREDL SYNC ===
+
+app.post('/api/aredl-sync', authenticateToken, async (c) => {
+  try {
+    // Fetch AREDL levels from the official API
+    const response = await fetch('https://api.aredl.net/v2/api/aredl/levels');
+    if (!response.ok) {
+      throw new Error('Failed to fetch AREDL data');
+    }
+    const aredlLevels = await response.json() as any[];
+    
+    // Get all current HKGD levels
+    const currentLevels = await c.env.DB.prepare(`
+      SELECT id, name, aredl_rank as aredlRank FROM levels
+    `).all();
+    
+    const levelMap = new Map<string, { id: string; name: string; oldRank: number | null }>();
+    for (const level of (currentLevels.results || [])) {
+      levelMap.set((level as any).name.toLowerCase().trim(), {
+        id: (level as any).id,
+        name: (level as any).name,
+        oldRank: (level as any).aredlRank
+      });
+    }
+    
+    // Create a map of level name -> AREDL rank
+    const aredlRankMap = new Map<string, number>();
+    for (const aredlLevel of aredlLevels) {
+      const name = aredlLevel.name?.toLowerCase().trim();
+      if (name) {
+        aredlRankMap.set(name, aredlLevel.position || aredlLevel.rank);
+      }
+    }
+    
+    // Update AREDL ranks for all matching levels
+    const updates: { id: string; name: string; oldRank: number | null; newRank: number }[] = [];
+    
+    for (const [name, levelInfo] of levelMap) {
+      const newRank = aredlRankMap.get(name);
+      if (newRank !== undefined) {
+        await c.env.DB.prepare(`
+          UPDATE levels SET aredl_rank = ? WHERE id = ?
+        `).bind(newRank, levelInfo.id).run();
+        
+        updates.push({
+          id: levelInfo.id,
+          name: levelInfo.name,
+          oldRank: levelInfo.oldRank,
+          newRank: newRank
+        });
+      }
+    }
+    
+    // Re-sort HKGD ranks based on AREDL difficulty (lower AREDL rank = harder = lower HKGD rank)
+    const sortedLevels = await c.env.DB.prepare(`
+      SELECT id FROM levels 
+      WHERE aredl_rank IS NOT NULL 
+      ORDER BY aredl_rank ASC
+    `).all();
+    
+    let hkgdRank = 1;
+    for (const level of (sortedLevels.results || [])) {
+      await c.env.DB.prepare(`
+        UPDATE levels SET hkgd_rank = ? WHERE id = ?
+      `).bind(hkgdRank, (level as any).id).run();
+      hkgdRank++;
+    }
+    
+    // Get levels without AREDL rank and assign them ranks after
+    const unrankedLevels = await c.env.DB.prepare(`
+      SELECT id FROM levels 
+      WHERE aredl_rank IS NULL 
+      ORDER BY hkgd_rank ASC
+    `).all();
+    
+    for (const level of (unrankedLevels.results || [])) {
+      await c.env.DB.prepare(`
+        UPDATE levels SET hkgd_rank = ? WHERE id = ?
+      `).bind(hkgdRank, (level as any).id).run();
+      hkgdRank++;
+    }
+    
+    // Create changelog entry for the sync
+    const today = new Date();
+    const dateStr = `${today.getFullYear().toString().slice(-2)}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+    
+    await c.env.DB.prepare(`
+      INSERT INTO changelog (id, date, change_type, description, list_type)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(
+      `sync-${Date.now()}`,
+      dateStr,
+      'sync',
+      `AREDL sync completed. Updated ${updates.length} level rankings.`,
+      'classic'
+    ).run();
+    
+    return c.json({
+      success: true,
+      message: `Synced ${updates.length} levels with AREDL`,
+      updatedLevels: updates.length,
+      details: updates.slice(0, 10) // Return first 10 for preview
+    });
+  } catch (error) {
+    console.error('AREDL sync error:', error);
+    return c.json({ error: 'Failed to sync with AREDL', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
