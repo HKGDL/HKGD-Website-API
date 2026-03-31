@@ -20,7 +20,7 @@ app.use('*', secureHeaders());
 
 // CORS configuration
 app.use('*', cors({
-  origin: ['http://localhost:5173', 'https://hkgdl.dpdns.org'],
+  origin: ['http://localhost:5173', 'https://hkgdl.dpdns.org', 'https://hkgd-website-frontend.hkgdl.workers.dev'],
   credentials: true,
 }));
 
