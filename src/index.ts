@@ -243,20 +243,25 @@ app.post('/api/levels', authenticateToken, async (c) => {
       description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier
     } = data;
     
+    // Convert undefined to null for SQLite
+    const safeBind = (val: any) => val ?? null;
+    
     await c.env.DB.prepare(`
       INSERT INTO levels (
         id, hkgd_rank, aredl_rank, pemonlist_rank, name, creator, verifier, level_id,
         description, thumbnail, song_id, song_name, tags, date_added, pack, gddl_tier, nlw_tier
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      id, hkgdRank, aredlRank, pemonlistRank, name, creator, verifier, levelId,
-      description, thumbnail, songId, songName, JSON.stringify(tags), dateAdded, pack, gddlTier, nlwTier
+      safeBind(id), safeBind(hkgdRank), safeBind(aredlRank), safeBind(pemonlistRank),
+      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
+      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
+      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(gddlTier), safeBind(nlwTier)
     ).run();
     
     return c.json({ id, message: 'Level created successfully' }, 201);
   } catch (error) {
     console.error('Error creating level:', error);
-    return c.json({ error: 'Failed to create level' }, 500);
+    return c.json({ error: 'Failed to create level', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
   }
 });
 
@@ -268,6 +273,9 @@ app.put('/api/levels/:id', authenticateToken, async (c) => {
       description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier
     } = data;
     
+    // Convert undefined to null for SQLite
+    const safeBind = (val: any) => val ?? null;
+    
     await c.env.DB.prepare(`
       UPDATE levels SET
         hkgd_rank = ?, aredl_rank = ?, pemonlist_rank = ?, name = ?, creator = ?, verifier = ?,
@@ -275,8 +283,10 @@ app.put('/api/levels/:id', authenticateToken, async (c) => {
         tags = ?, date_added = ?, pack = ?, gddl_tier = ?, nlw_tier = ?
       WHERE id = ?
     `).bind(
-      hkgdRank, aredlRank, pemonlistRank, name, creator, verifier, levelId,
-      description, thumbnail, songId, songName, JSON.stringify(tags), dateAdded, pack, gddlTier, nlwTier,
+      safeBind(hkgdRank), safeBind(aredlRank), safeBind(pemonlistRank),
+      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
+      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
+      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(gddlTier), safeBind(nlwTier),
       c.req.param('id')
     ).run();
     
@@ -307,10 +317,21 @@ app.post('/api/levels/:levelId/records', authenticateToken, async (c) => {
       return c.json({ error: 'Valid video URL is required' }, 400);
     }
     
+    // Convert undefined to null for SQLite
+    const safeBind = (val: any) => val ?? null;
+    
     const result = await c.env.DB.prepare(`
       INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(c.req.param('levelId'), player, date, videoUrl, fps, cbf ? 1 : 0, attempts).run();
+    `).bind(
+      c.req.param('levelId'),
+      safeBind(player),
+      safeBind(date),
+      safeBind(videoUrl),
+      safeBind(fps),
+      cbf ? 1 : 0,
+      safeBind(attempts)
+    ).run();
     
     return c.json({ message: 'Record added successfully', id: result.meta.last_row_id }, 201);
   } catch (error) {
