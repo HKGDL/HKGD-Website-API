@@ -311,11 +311,13 @@ app.delete('/api/levels/:id', authenticateToken, async (c) => {
 
 app.post('/api/levels/:levelId/records', authenticateToken, async (c) => {
   try {
-    const { player, date, videoUrl, fps, cbf, attempts } = await c.req.json();
-    
-    if (!videoUrl || videoUrl.length < 10) {
-      return c.json({ error: 'Valid video URL is required' }, 400);
-    }
+    const body = await c.req.json();
+    const player = body.player;
+    const date = body.date;
+    const videoUrl = body.videoUrl || body.video_url;
+    const fps = body.fps;
+    const cbf = body.cbf;
+    const attempts = body.attempts;
     
     // Convert undefined to null for SQLite
     const safeBind = (val: any) => val ?? null;
