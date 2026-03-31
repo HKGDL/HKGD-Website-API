@@ -500,6 +500,37 @@ app.get('/api/pending-submissions', async (c) => {
   }
 });
 
+app.post('/api/pending-submissions', async (c) => {
+  try {
+    const data = await c.req.json();
+    const { id, levelId, levelName, isNewLevel, record, record_data, level_data, submittedAt, submittedBy, status } = data;
+    
+    // Support both data formats
+    const actualRecordData = record_data || JSON.stringify(record);
+    const actualLevelData = level_data ? JSON.stringify(level_data) : null;
+    
+    await c.env.DB.prepare(`
+      INSERT INTO pending_submissions (id, level_id, level_name, is_new_level, record_data, level_data, submitted_at, submitted_by, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      levelId,
+      levelName,
+      isNewLevel ? 1 : 0,
+      actualRecordData,
+      actualLevelData,
+      submittedAt,
+      submittedBy,
+      status || 'pending'
+    ).run();
+    
+    return c.json({ success: true, id, message: 'Submission created successfully' }, 201);
+  } catch (error) {
+    console.error('Error creating submission:', error);
+    return c.json({ error: 'Failed to create submission' }, 500);
+  }
+});
+
 // === PLATFORMER DEMONS PROXY ===
 
 app.get('/api/platformer-demons', async (c) => {
