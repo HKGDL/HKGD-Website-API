@@ -490,9 +490,15 @@ app.get('/api/pending-submissions', async (c) => {
     `).all();
     
     return c.json((submissions.results || []).map((s: any) => ({
-      ...s,
-      record_data: JSON.parse(s.record_data),
-      level_data: s.level_data ? JSON.parse(s.level_data) : null
+      id: s.id,
+      levelId: s.level_id,
+      levelName: s.level_name,
+      isNewLevel: s.is_new_level === 1,
+      record: JSON.parse(s.record_data),
+      levelData: s.level_data ? JSON.parse(s.level_data) : null,
+      submittedAt: s.submitted_at,
+      submittedBy: s.submitted_by,
+      status: s.status
     })));
   } catch (error) {
     console.error('Error fetching submissions:', error);
@@ -528,6 +534,26 @@ app.post('/api/pending-submissions', async (c) => {
   } catch (error) {
     console.error('Error creating submission:', error);
     return c.json({ error: 'Failed to create submission' }, 500);
+  }
+});
+
+app.put('/api/pending-submissions/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { status } = await c.req.json();
+    
+    if (!['pending', 'approved', 'rejected'].includes(status)) {
+      return c.json({ error: 'Invalid status' }, 400);
+    }
+    
+    await c.env.DB.prepare(`
+      UPDATE pending_submissions SET status = ? WHERE id = ?
+    `).bind(status, id).run();
+    
+    return c.json({ success: true, message: 'Submission updated successfully' });
+  } catch (error) {
+    console.error('Error updating submission:', error);
+    return c.json({ error: 'Failed to update submission' }, 500);
   }
 });
 
