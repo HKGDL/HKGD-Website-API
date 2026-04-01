@@ -85,4 +85,4 @@ See `schema.sql` for the complete database structure.
 
 ## License
 
-DBAD (Don't Be A Dick)
+[DBAD](./DBAD.md)
