@@ -659,24 +659,29 @@ app.post('/api/aredl-sync', authenticateToken, async (c) => {
       });
     }
     
-    // Create a map of level name -> AREDL rank
-    const aredlRankMap = new Map<string, number>();
+    // Create a map of level name -> AREDL data
+    const aredlDataMap = new Map<string, any>();
     for (const aredlLevel of aredlLevels) {
       const name = aredlLevel.name?.toLowerCase().trim();
       if (name) {
-        aredlRankMap.set(name, aredlLevel.position || aredlLevel.rank);
+        aredlDataMap.set(name, aredlLevel);
       }
     }
     
-    // Update AREDL ranks for all matching levels
+    // Update AREDL ranks and extra data for all matching levels
     const updates: { id: string; name: string; oldRank: number | null; newRank: number }[] = [];
     
     for (const [name, levelInfo] of levelMap) {
-      const newRank = aredlRankMap.get(name);
-      if (newRank !== undefined) {
+      const aredlData = aredlDataMap.get(name);
+      if (aredlData) {
+        const newRank = aredlData.position || aredlData.rank;
+        const edelEnjoyment = aredlData.edel_enjoyment ?? null;
+        const nlwTier = aredlData.nlw_tier ?? null;
+        const gddlTier = aredlData.gddl_tier ?? null;
+        
         await c.env.DB.prepare(`
-          UPDATE levels SET aredl_rank = ? WHERE id = ?
-        `).bind(newRank, levelInfo.id).run();
+          UPDATE levels SET aredl_rank = ?, edel_enjoyment = ?, nlw_tier = ?, gddl_tier = ? WHERE id = ?
+        `).bind(newRank, edelEnjoyment, nlwTier, gddlTier, levelInfo.id).run();
         
         updates.push({
           id: levelInfo.id,
