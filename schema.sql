@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS levels (
   date_added TEXT,
   pack TEXT,
   gddl_tier INTEGER,
-  nlw_tier TEXT
+  nlw_tier TEXT,
+  edel_enjoyment REAL
 );
 
 -- Records table

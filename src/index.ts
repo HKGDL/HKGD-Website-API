@@ -165,7 +165,7 @@ app.get('/api/levels', async (c) => {
         id, hkgd_rank as hkgdRank, aredl_rank as aredlRank, pemonlist_rank as pemonlistRank,
         name, creator, verifier, level_id as levelId, description, thumbnail,
         song_id as songId, song_name as songName, tags, date_added as dateAdded,
-        pack, gddl_tier as gddlTier, nlw_tier as nlwTier
+        pack, gddl_tier as gddlTier, nlw_tier as nlwTier, edel_enjoyment as edelEnjoyment
       FROM levels
       ORDER BY hkgd_rank ASC
     `).all();
@@ -208,7 +208,7 @@ app.get('/api/levels/:id', async (c) => {
         id, hkgd_rank as hkgdRank, aredl_rank as aredlRank, pemonlist_rank as pemonlistRank,
         name, creator, verifier, level_id as levelId, description, thumbnail,
         song_id as songId, song_name as songName, tags, date_added as dateAdded,
-        pack, gddl_tier as gddlTier, nlw_tier as nlwTier
+        pack, gddl_tier as gddlTier, nlw_tier as nlwTier, edel_enjoyment as edelEnjoyment
       FROM levels
       WHERE id = ?
     `).bind(c.req.param('id')).first();
@@ -240,7 +240,7 @@ app.post('/api/levels', authenticateToken, async (c) => {
     const data = await c.req.json();
     const {
       id, hkgdRank, aredlRank, pemonlistRank, name, creator, verifier, levelId,
-      description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier
+      description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier, edelEnjoyment
     } = data;
     
     // Convert undefined to null for SQLite
@@ -249,13 +249,13 @@ app.post('/api/levels', authenticateToken, async (c) => {
     await c.env.DB.prepare(`
       INSERT INTO levels (
         id, hkgd_rank, aredl_rank, pemonlist_rank, name, creator, verifier, level_id,
-        description, thumbnail, song_id, song_name, tags, date_added, pack, gddl_tier, nlw_tier
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        description, thumbnail, song_id, song_name, tags, date_added, pack, gddl_tier, nlw_tier, edel_enjoyment
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       safeBind(id), safeBind(hkgdRank), safeBind(aredlRank), safeBind(pemonlistRank),
       safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
       safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
-      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(gddlTier), safeBind(nlwTier)
+      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(gddlTier), safeBind(nlwTier), safeBind(edelEnjoyment)
     ).run();
     
     return c.json({ id, message: 'Level created successfully' }, 201);
