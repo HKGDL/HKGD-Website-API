@@ -436,10 +436,14 @@ app.post('/api/changelog', authenticateToken, async (c) => {
   try {
     const { id, date, levelName, levelId, change, oldRank, newRank, description, listType } = await c.req.json();
     
+    // Convert undefined to null for optional fields (SQLite doesn't accept undefined)
+    const safeOldRank = oldRank ?? null;
+    const safeNewRank = newRank ?? null;
+    
     await c.env.DB.prepare(`
       INSERT INTO changelog (id, date, level_name, level_id, change_type, old_rank, new_rank, description, list_type)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, date, levelName, levelId, change, oldRank, newRank, description, listType || 'classic').run();
+    `).bind(id, date, levelName, levelId, change, safeOldRank, safeNewRank, description, listType || 'classic').run();
     
     return c.json({ id, message: 'Changelog entry created successfully' }, 201);
   } catch (error) {
