@@ -370,19 +370,24 @@ app.put('/api/records/:recordId', authenticateToken, async (c) => {
       return c.json({ error: 'No fields to update' }, 400);
     }
     
-    values.push(recordId);
-    await c.env.DB.prepare(`UPDATE records SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+    values.push(parseInt(recordId));
+    const result = await c.env.DB.prepare(`UPDATE records SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+    
+    if (result.meta.changes === 0) {
+      return c.json({ error: 'Record not found' }, 404);
+    }
     
     return c.json({ message: 'Record updated successfully' });
   } catch (error) {
     console.error('Error updating record:', error);
-    return c.json({ error: 'Failed to update record' }, 500);
+    return c.json({ error: 'Failed to update record', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
   }
 });
 
 app.delete('/api/records/:recordId', authenticateToken, async (c) => {
   try {
-    const result = await c.env.DB.prepare('DELETE FROM records WHERE id = ?').bind(c.req.param('recordId')).run();
+    const recordId = parseInt(c.req.param('recordId'));
+    const result = await c.env.DB.prepare('DELETE FROM records WHERE id = ?').bind(recordId).run();
     
     if (result.meta.changes === 0) {
       return c.json({ error: 'Record not found' }, 404);
