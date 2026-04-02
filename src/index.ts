@@ -726,11 +726,13 @@ app.post('/api/aredl-sync', authenticateToken, async (c) => {
     const dateStr = `${today.getFullYear().toString().slice(-2)}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
     
     await c.env.DB.prepare(`
-      INSERT INTO changelog (id, date, change_type, description, list_type)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO changelog (id, date, level_name, level_id, change_type, description, list_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(
       `sync-${Date.now()}`,
       dateStr,
+      'AREDL Sync',
+      'system',
       'sync',
       `AREDL sync completed. Updated ${updates.length} level rankings.`,
       'classic'
