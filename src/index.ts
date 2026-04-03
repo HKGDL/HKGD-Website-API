@@ -639,6 +639,46 @@ app.put('/api/settings/:key', authenticateToken, async (c) => {
   }
 });
 
+// === IP BAN MANAGEMENT ===
+
+app.get('/api/ip-bans', authenticateToken, async (c) => {
+  try {
+    const bans = await c.env.DB.prepare(`
+      SELECT ip, attempts, banned_until, updated_at
+      FROM ip_bans
+      ORDER BY updated_at DESC
+    `).all();
+    
+    const now = Date.now();
+    const formattedBans = (bans.results || []).map((ban: any) => ({
+      ip: ban.ip,
+      attempts: ban.attempts,
+      bannedUntil: ban.banned_until,
+      isCurrentlyBanned: ban.banned_until > now,
+      remainingTime: ban.banned_until > now ? Math.ceil((ban.banned_until - now) / 1000) : 0,
+      updatedAt: ban.updated_at
+    }));
+    
+    return c.json(formattedBans);
+  } catch (error) {
+    console.error('Error fetching IP bans:', error);
+    return c.json({ error: 'Failed to fetch IP bans' }, 500);
+  }
+});
+
+app.delete('/api/ip-bans/:ip', authenticateToken, async (c) => {
+  try {
+    const ip = c.req.param('ip');
+    
+    await c.env.DB.prepare('DELETE FROM ip_bans WHERE ip = ?').bind(ip).run();
+    
+    return c.json({ message: 'IP unbanned successfully', ip });
+  } catch (error) {
+    console.error('Error unbanning IP:', error);
+    return c.json({ error: 'Failed to unban IP' }, 500);
+  }
+});
+
 // === AREDL SYNC ===
 
 app.post('/api/aredl-sync', authenticateToken, async (c) => {
