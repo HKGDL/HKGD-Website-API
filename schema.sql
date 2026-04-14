@@ -96,8 +96,26 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at TEXT NOT NULL
 );
 
+-- Suggestions table (user-submitted feedback/issues)
+CREATE TABLE IF NOT EXISTS suggestions (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT 'issue',
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  level_id TEXT,
+  level_name TEXT,
+  submitted_by TEXT,
+  submitted_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  admin_notes TEXT,
+  resolved_at TEXT,
+  resolved_by TEXT
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_levels_hkgd_rank ON levels(hkgd_rank);
 CREATE INDEX IF NOT EXISTS idx_records_level_id ON records(level_id);
 CREATE INDEX IF NOT EXISTS idx_changelog_date ON changelog(date DESC);
 CREATE INDEX IF NOT EXISTS idx_members_levels ON members(levels_beaten DESC);
+CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
+CREATE INDEX IF NOT EXISTS idx_suggestions_date ON suggestions(submitted_at DESC);

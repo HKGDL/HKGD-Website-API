@@ -815,6 +815,107 @@ app.post('/api/aredl-sync', authenticateToken, async (c) => {
   }
 });
 
+// === SUGGESTIONS ROUTES ===
+
+// Get all suggestions (public)
+app.get('/api/suggestions', async (c) => {
+  try {
+    const suggestions = await c.env.DB.prepare(`
+      SELECT 
+        id, type, title, description, level_id as levelId, level_name as levelName,
+        submitted_by as submittedBy, submitted_at as submittedAt, status,
+        admin_notes as adminNotes, resolved_at as resolvedAt, resolved_by as resolvedBy
+      FROM suggestions
+      ORDER BY submitted_at DESC
+    `).all();
+    
+    return c.json(suggestions.results || []);
+  } catch (error) {
+    console.error('Error fetching suggestions:', error);
+    return c.json({ error: 'Failed to fetch suggestions' }, 500);
+  }
+});
+
+// Get pending suggestions (for admin panel)
+app.get('/api/suggestions/pending', async (c) => {
+  try {
+    const suggestions = await c.env.DB.prepare(`
+      SELECT 
+        id, type, title, description, level_id as levelId, level_name as levelName,
+        submitted_by as submittedBy, submitted_at as submittedAt, status,
+        admin_notes as adminNotes, resolved_at as resolvedAt, resolved_by as resolvedBy
+      FROM suggestions
+      WHERE status = 'pending'
+      ORDER BY submitted_at DESC
+    `).all();
+    
+    return c.json(suggestions.results || []);
+  } catch (error) {
+    console.error('Error fetching pending suggestions:', error);
+    return c.json({ error: 'Failed to fetch pending suggestions' }, 500);
+  }
+});
+
+// Create a new suggestion (public)
+app.post('/api/suggestions', async (c) => {
+  try {
+    const data = await c.req.json();
+    const { type, title, description, levelId, levelName, submittedBy } = data;
+    
+    const id = `suggestion-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const submittedAt = new Date().toISOString();
+    
+    await c.env.DB.prepare(`
+      INSERT INTO suggestions (id, type, title, description, level_id, level_name, submitted_by, submitted_at, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `).bind(id, type || 'issue', title, description, levelId || null, levelName || null, submittedBy || null, submittedAt).run();
+    
+    return c.json({ success: true, id, message: 'Suggestion submitted successfully' }, 201);
+  } catch (error) {
+    console.error('Error creating suggestion:', error);
+    return c.json({ error: 'Failed to submit suggestion' }, 500);
+  }
+});
+
+// Update suggestion status (admin only)
+app.put('/api/suggestions/:id', authenticateToken, async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { status, adminNotes } = await c.req.json();
+    
+    if (!['pending', 'approved', 'rejected', 'fixed', 'in_progress'].includes(status)) {
+      return c.json({ error: 'Invalid status' }, 400);
+    }
+    
+    const resolvedAt = status !== 'pending' ? new Date().toISOString() : null;
+    const user = c.get('user') as any;
+    const resolvedBy = status !== 'pending' ? (user.isAdmin === true ? 'admin' : 'suggestions_admin') : null;
+    
+    await c.env.DB.prepare(`
+      UPDATE suggestions SET status = ?, admin_notes = ?, resolved_at = ?, resolved_by = ? WHERE id = ?
+    `).bind(status, adminNotes || null, resolvedAt, resolvedBy, id).run();
+    
+    return c.json({ success: true, message: 'Suggestion updated successfully' });
+  } catch (error) {
+    console.error('Error updating suggestion:', error);
+    return c.json({ error: 'Failed to update suggestion' }, 500);
+  }
+});
+
+// Delete suggestion (admin only)
+app.delete('/api/suggestions/:id', authenticateToken, async (c) => {
+  try {
+    const id = c.req.param('id');
+    
+    await c.env.DB.prepare('DELETE FROM suggestions WHERE id = ?').bind(id).run();
+    
+    return c.json({ success: true, message: 'Suggestion deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting suggestion:', error);
+    return c.json({ error: 'Failed to delete suggestion' }, 500);
+  }
+});
+
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
