@@ -106,6 +106,7 @@ app.post('/api/auth/login', async (c) => {
     const { password } = await c.req.json();
     const ip = getClientIP(c);
     const adminPassword = c.env.ADMIN_PASSWORD || 'hkgdadmin2024';
+    const suggestionsPassword = c.env.SUGGESTIONS_PASSWORD || 'Lh201202729';
     const jwtSecret = c.env.JWT_SECRET || 'hkgd-secret-key-2024';
     
     // Check if IP is banned
@@ -118,6 +119,7 @@ app.post('/api/auth/login', async (c) => {
       }, 403);
     }
     
+    // Check for full admin password
     if (password === adminPassword) {
       await resetFailedAttempts(c.env.DB, ip);
       
@@ -132,15 +134,33 @@ app.post('/api/auth/login', async (c) => {
         user: { isAdmin: true },
         token
       });
-    } else {
-      const attempts = await recordFailedLogin(c.env.DB, ip);
-      return c.json({
-        success: false,
-        error: 'Invalid password',
-        attemptsRemaining: Math.max(0, MAX_LOGIN_ATTEMPTS - attempts),
-        attempts
-      }, 401);
     }
+    
+    // Check for suggestions-only password
+    if (password === suggestionsPassword) {
+      await resetFailedAttempts(c.env.DB, ip);
+      
+      const secret = new TextEncoder().encode(jwtSecret);
+      const token = await new SignJWT({ isAdmin: 'suggestions', timestamp: Date.now() })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setExpirationTime('2h')
+        .sign(secret);
+      
+      return c.json({
+        success: true,
+        user: { isAdmin: 'suggestions' },
+        token
+      });
+    }
+    
+    // Invalid password
+    const attempts = await recordFailedLogin(c.env.DB, ip);
+    return c.json({
+      success: false,
+      error: 'Invalid password',
+      attemptsRemaining: Math.max(0, MAX_LOGIN_ATTEMPTS - attempts),
+      attempts
+    }, 401);
   } catch (error) {
     console.error('Login error:', error);
     return c.json({ error: 'Login failed' }, 500);
