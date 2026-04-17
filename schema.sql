@@ -112,6 +112,16 @@ CREATE TABLE IF NOT EXISTS suggestions (
   resolved_by TEXT
 );
 
+-- Player Mappings table (for mapping game names to database names)
+CREATE TABLE IF NOT EXISTS player_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_name TEXT NOT NULL,
+    db_name TEXT NOT NULL,
+    account_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(game_name)
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_levels_hkgd_rank ON levels(hkgd_rank);
 CREATE INDEX IF NOT EXISTS idx_records_level_id ON records(level_id);
@@ -119,3 +129,5 @@ CREATE INDEX IF NOT EXISTS idx_changelog_date ON changelog(date DESC);
 CREATE INDEX IF NOT EXISTS idx_members_levels ON members(levels_beaten DESC);
 CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
 CREATE INDEX IF NOT EXISTS idx_suggestions_date ON suggestions(submitted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_player_mappings_game_name ON player_mappings(game_name);
+CREATE INDEX IF NOT EXISTS idx_player_mappings_db_name ON player_mappings(db_name);

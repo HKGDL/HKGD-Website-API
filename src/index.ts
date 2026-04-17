@@ -21,8 +21,10 @@ app.use('*', secureHeaders());
 
 // CORS configuration
 app.use('*', cors({
-  origin: ['http://localhost:5173', 'https://hkgdl.dpdns.org', 'https://hkgd-website-frontend.hkgdl.workers.dev'],
+  origin: ['http://localhost:5173', 'https://hkgdl.dpdns.org', 'https://hkgd-website-frontend.hkgdl.workers.dev', 'geode://*', 'http://localhost:*', 'https://*.hkgdl.dpdns.org'],
   credentials: true,
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
 
 // Helper functions
@@ -453,7 +455,7 @@ app.get('/api/player-mapping', async (c) => {
     }
     
     const mapping = await c.env.DB.prepare(`
-      SELECT db_name, account_id FROM player_mappings WHERE game_name = ?
+      SELECT db_name, account_id FROM player_mappings WHERE LOWER(game_name) = LOWER(?)
     `).bind(gameName.toString()).first();
     
     return c.json({
@@ -492,13 +494,13 @@ app.post('/api/player-mapping', authenticateToken, async (c) => {
 
 app.get('/api/player-mappings', authenticateToken, async (c) => {
   try {
-    const mappings = await c.env.DB.prepare(`
+    const result = await c.env.DB.prepare(`
       SELECT id, game_name as gameName, db_name as dbName, account_id as accountId, created_at as createdAt
       FROM player_mappings
       ORDER BY created_at DESC
     `).all();
     
-    return c.json(mappings.results || []);
+    return c.json(result.results || []);
   } catch (error) {
     console.error('Error fetching player mappings:', error);
     return c.json({ error: 'Failed to fetch player mappings' }, 500);
