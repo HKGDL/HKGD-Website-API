@@ -21,7 +21,7 @@ console.log('Exporting data from:', DB_PATH);
 try {
   const db = new Database(DB_PATH, { readonly: true });
   
-  const tables = ['levels', 'records', 'changelog', 'members', 'pending_submissions', 'website_content'];
+  const tables = ['levels', 'records', 'changelog', 'members', 'pending_submissions', 'website_content', 'player_mappings'];
   const statements = [];
   
   for (const table of tables) {
