@@ -437,6 +437,82 @@ app.get('/api/members', async (c) => {
   }
 });
 
+// === PLAYER MAPPING ROUTES ===
+
+app.get('/api/player-mapping', async (c) => {
+  try {
+    const { gameName } = c.req.query();
+    
+    if (!gameName) {
+      return c.json({ error: 'gameName parameter required' }, 400);
+    }
+    
+    const mapping = await c.env.DB.prepare(`
+      SELECT db_name, account_id FROM player_mappings WHERE game_name = ?
+    `).bind(gameName.toString()).first();
+    
+    return c.json({
+      dbName: mapping?.db_name || gameName,
+      accountId: mapping?.account_id || null,
+      isMapped: !!mapping
+    });
+  } catch (error) {
+    console.error('Error fetching player mapping:', error);
+    return c.json({ error: 'Failed to fetch player mapping' }, 500);
+  }
+});
+
+app.post('/api/player-mapping', authenticateToken, async (c) => {
+  try {
+    const { gameName, dbName, accountId } = await c.req.json();
+    
+    if (!gameName || !dbName) {
+      return c.json({ error: 'gameName and dbName are required' }, 400);
+    }
+    
+    await c.env.DB.prepare(`
+      INSERT INTO player_mappings (game_name, db_name, account_id)
+      VALUES (?, ?, ?)
+      ON CONFLICT(game_name) DO UPDATE SET
+        db_name = excluded.db_name,
+        account_id = excluded.account_id
+    `).bind(gameName, dbName, accountId || null).run();
+    
+    return c.json({ success: true, gameName, dbName });
+  } catch (error) {
+    console.error('Error creating player mapping:', error);
+    return c.json({ error: 'Failed to create player mapping' }, 500);
+  }
+});
+
+app.get('/api/player-mappings', authenticateToken, async (c) => {
+  try {
+    const mappings = await c.env.DB.prepare(`
+      SELECT id, game_name as gameName, db_name as dbName, account_id as accountId, created_at as createdAt
+      FROM player_mappings
+      ORDER BY created_at DESC
+    `).all();
+    
+    return c.json(mappings.results || []);
+  } catch (error) {
+    console.error('Error fetching player mappings:', error);
+    return c.json({ error: 'Failed to fetch player mappings' }, 500);
+  }
+});
+
+app.delete('/api/player-mapping/:id', authenticateToken, async (c) => {
+  try {
+    await c.env.DB.prepare('DELETE FROM player_mappings WHERE id = ?')
+      .bind(c.req.param('id'))
+      .run();
+    
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting player mapping:', error);
+    return c.json({ error: 'Failed to delete player mapping' }, 500);
+  }
+});
+
 // === CHANGELOG ROUTES ===
 
 app.get('/api/changelog', async (c) => {
