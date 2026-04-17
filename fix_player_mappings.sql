@@ -1,0 +1,15 @@
+-- Drop and recreate player_mappings with correct unique constraint
+DROP TABLE IF EXISTS player_mappings;
+
+CREATE TABLE player_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_name TEXT NOT NULL,
+    db_name TEXT NOT NULL,
+    account_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(game_name)
+);
+
+-- Create index for faster lookups
+CREATE INDEX IF NOT EXISTS idx_player_mappings_game_name ON player_mappings(game_name);
+CREATE INDEX IF NOT EXISTS idx_player_mappings_db_name ON player_mappings(db_name);

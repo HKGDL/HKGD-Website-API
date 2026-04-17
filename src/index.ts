@@ -10,6 +10,7 @@ type Bindings = {
   ENVIRONMENT: string;
   JWT_SECRET: string;
   ADMIN_PASSWORD: string;
+  SUGGESTIONS_PASSWORD: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -105,9 +106,13 @@ app.post('/api/auth/login', async (c) => {
   try {
     const { password } = await c.req.json();
     const ip = getClientIP(c);
-    const adminPassword = c.env.ADMIN_PASSWORD || 'hkgdadmin2024';
-    const suggestionsPassword = c.env.SUGGESTIONS_PASSWORD || 'Lh201202729';
-    const jwtSecret = c.env.JWT_SECRET || 'hkgd-secret-key-2024';
+    const adminPassword = c.env.ADMIN_PASSWORD;
+    const suggestionsPassword = c.env.SUGGESTIONS_PASSWORD;
+    const jwtSecret = c.env.JWT_SECRET;
+    
+    if (!adminPassword || !suggestionsPassword || !jwtSecret) {
+      return c.json({ error: 'Server configuration error' }, 500);
+    }
     
     // Check if IP is banned
     const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
