@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS player_mappings (
     db_name TEXT NOT NULL,
     account_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(game_name, db_name)
+    UNIQUE(game_name)
 );
 
 -- Create index for faster lookups
