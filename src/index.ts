@@ -999,6 +999,243 @@ app.delete('/api/suggestions/:id', authenticateToken, async (c) => {
   }
 });
 
+// === PLATFORMER LEVELS ROUTES ===
+
+app.get('/api/platformer-levels', async (c) => {
+  try {
+    const levels = await c.env.DB.prepare(`
+      SELECT
+        id, hkgd_rank as hkgdRank, pemonlist_rank as pemonlistRank,
+        name, creator, verifier, level_id as levelId, description, thumbnail,
+        song_id as songId, song_name as songName, tags, date_added as dateAdded,
+        pack, difficulty
+      FROM platformer_levels
+      ORDER BY hkgd_rank ASC
+    `).all();
+    
+    const allRecords = await c.env.DB.prepare(`
+      SELECT id, level_id, player, date, video_url as videoUrl, fps, cbf, attempts
+      FROM platformer_records
+      ORDER BY date DESC
+    `).all();
+    
+    const recordsByLevel: Record<string, any[]> = {};
+    for (const r of (allRecords.results || [])) {
+      if (!recordsByLevel[r.level_id as string]) {
+        recordsByLevel[r.level_id as string] = [];
+      }
+      recordsByLevel[r.level_id as string].push({ ...r, cbf: r.cbf === 1 });
+    }
+    
+    const levelsWithRecords = (levels.results || []).map((level: any) => ({
+      ...level,
+      songName: level.songName && level.songName !== 'undefined by undefined' ? level.songName : null,
+      tags: level.tags ? JSON.parse(level.tags) : [],
+      records: recordsByLevel[level.id] || []
+    }));
+    
+    return c.json(levelsWithRecords);
+  } catch (error) {
+    console.error('Error fetching platformer levels:', error);
+    return c.json({ error: 'Failed to fetch platformer levels' }, 500);
+  }
+});
+
+app.get('/api/platformer-levels/:id', async (c) => {
+  try {
+    const level = await c.env.DB.prepare(`
+      SELECT
+        id, hkgd_rank as hkgdRank, pemonlist_rank as pemonlistRank,
+        name, creator, verifier, level_id as levelId, description, thumbnail,
+        song_id as songId, song_name as songName, tags, date_added as dateAdded,
+        pack, difficulty
+      FROM platformer_levels
+      WHERE id = ?
+    `).bind(c.req.param('id')).first();
+    
+    if (!level) {
+      return c.json({ error: 'Platformer level not found' }, 404);
+    }
+    
+    const records = await c.env.DB.prepare(`
+      SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts
+      FROM platformer_records
+      WHERE level_id = ?
+      ORDER BY date DESC
+    `).bind(c.req.param('id')).all();
+    
+    return c.json({
+      ...level,
+      tags: (level.tags as string) ? JSON.parse(level.tags as string) : [],
+      records: (records.results || []).map((r: any) => ({ ...r, cbf: r.cbf === 1 }))
+    });
+  } catch (error) {
+    console.error('Error fetching platformer level:', error);
+    return c.json({ error: 'Failed to fetch platformer level' }, 500);
+  }
+});
+
+app.post('/api/platformer-levels', authenticateToken, async (c) => {
+  try {
+    const data = await c.req.json();
+    const {
+      id, hkgdRank, pemonlistRank, name, creator, verifier, levelId,
+      description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty
+    } = data;
+    
+    const safeBind = (val: any) => val ?? null;
+    
+    await c.env.DB.prepare(`
+      INSERT INTO platformer_levels (
+        id, hkgd_rank, pemonlist_rank, name, creator, verifier, level_id,
+        description, thumbnail, song_id, song_name, tags, date_added, pack, difficulty
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      safeBind(id), safeBind(hkgdRank), safeBind(pemonlistRank),
+      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
+      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
+      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(difficulty)
+    ).run();
+    
+    return c.json({ id, message: 'Platformer level created successfully' }, 201);
+  } catch (error) {
+    console.error('Error creating platformer level:', error);
+    return c.json({ error: 'Failed to create platformer level', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
+app.put('/api/platformer-levels/:id', authenticateToken, async (c) => {
+  try {
+    const data = await c.req.json();
+    const {
+      hkgdRank, pemonlistRank, name, creator, verifier, levelId,
+      description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty
+    } = data;
+    
+    const safeBind = (val: any) => val ?? null;
+    
+    await c.env.DB.prepare(`
+      UPDATE platformer_levels SET
+        hkgd_rank = ?, pemonlist_rank = ?, name = ?, creator = ?, verifier = ?,
+        level_id = ?, description = ?, thumbnail = ?, song_id = ?, song_name = ?,
+        tags = ?, date_added = ?, pack = ?, difficulty = ?
+      WHERE id = ?
+    `).bind(
+      safeBind(hkgdRank), safeBind(pemonlistRank),
+      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
+      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
+      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(difficulty),
+      c.req.param('id')
+    ).run();
+    
+    return c.json({ message: 'Platformer level updated successfully' });
+  } catch (error) {
+    console.error('Error updating platformer level:', error);
+    return c.json({ error: 'Failed to update platformer level' }, 500);
+  }
+});
+
+app.delete('/api/platformer-levels/:id', authenticateToken, async (c) => {
+  try {
+    await c.env.DB.prepare('DELETE FROM platformer_levels WHERE id = ?').bind(c.req.param('id')).run();
+    return c.json({ message: 'Platformer level deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting platformer level:', error);
+    return c.json({ error: 'Failed to delete platformer level' }, 500);
+  }
+});
+
+// Platformer Records
+app.post('/api/platformer-levels/:levelId/records', authenticateToken, async (c) => {
+  try {
+    const body = await c.req.json();
+    const player = body.player;
+    const date = body.date;
+    const videoUrl = body.videoUrl || body.video_url;
+    const fps = body.fps;
+    const cbf = body.cbf;
+    const attempts = body.attempts;
+    
+    const safeBind = (val: any) => val ?? null;
+    
+    const result = await c.env.DB.prepare(`
+      INSERT INTO platformer_records (level_id, player, date, video_url, fps, cbf, attempts)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      c.req.param('levelId'),
+      safeBind(player),
+      safeBind(date),
+      safeBind(videoUrl),
+      safeBind(fps),
+      cbf ? 1 : 0,
+      safeBind(attempts)
+    ).run();
+    
+    return c.json({ message: 'Platformer record added successfully', id: result.meta.last_row_id }, 201);
+  } catch (error) {
+    console.error('Error adding platformer record:', error);
+    return c.json({ error: 'Failed to add platformer record' }, 500);
+  }
+});
+
+app.put('/api/platformer-records/:recordId', authenticateToken, async (c) => {
+  try {
+    const data = await c.req.json();
+    const recordId = c.req.param('recordId');
+    const updates: string[] = [];
+    const values: any[] = [];
+    
+    const fields = ['player', 'date', 'video_url', 'fps', 'cbf', 'attempts'];
+    const dataMap: any = {
+      player: data.player,
+      date: data.date,
+      video_url: data.videoUrl,
+      fps: data.fps,
+      cbf: data.cbf ? 1 : 0,
+      attempts: data.attempts
+    };
+    
+    for (const field of fields) {
+      if (dataMap[field] !== undefined) {
+        updates.push(`${field} = ?`);
+        values.push(dataMap[field]);
+      }
+    }
+    
+    if (updates.length === 0) {
+      return c.json({ error: 'No fields to update' }, 400);
+    }
+    
+    values.push(parseInt(recordId));
+    const result = await c.env.DB.prepare(`UPDATE platformer_records SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
+    
+    if (result.meta.changes === 0) {
+      return c.json({ error: 'Platformer record not found' }, 404);
+    }
+    
+    return c.json({ message: 'Platformer record updated successfully' });
+  } catch (error) {
+    console.error('Error updating platformer record:', error);
+    return c.json({ error: 'Failed to update platformer record', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
+app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => {
+  try {
+    const recordId = parseInt(c.req.param('recordId'));
+    const result = await c.env.DB.prepare('DELETE FROM platformer_records WHERE id = ?').bind(recordId).run();
+    
+    if (result.meta.changes === 0) {
+      return c.json({ error: 'Platformer record not found' }, 404);
+    }
+    
+    return c.json({ message: 'Platformer record deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting platformer record:', error);
+    return c.json({ error: 'Failed to delete platformer record' }, 500);
+  }
+});
+
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
