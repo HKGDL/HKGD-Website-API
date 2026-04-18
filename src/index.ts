@@ -174,7 +174,7 @@ app.post('/api/auth/login', async (c) => {
   }
 });
 
-app.post('/api/auth/verify', authenticateToken, async (c) => {
+app.post('/api/auth/verify', authenticateToken, async (c: any) => {
   return c.json({ success: true, user: c.get('user') });
 });
 
@@ -633,7 +633,9 @@ app.get('/api/pending-submissions', async (c) => {
       levelData: s.level_data ? JSON.parse(s.level_data) : null,
       submittedAt: s.submitted_at,
       submittedBy: s.submitted_by,
-      status: s.status
+      status: s.status,
+      isPlatformer: s.is_platformer === 1,
+      adminDecidesDifficulty: s.admin_decides_difficulty === 1
     })));
   } catch (error) {
     console.error('Error fetching submissions:', error);
@@ -669,6 +671,43 @@ app.post('/api/pending-submissions', async (c) => {
   } catch (error) {
     console.error('Error creating submission:', error);
     return c.json({ error: 'Failed to create submission' }, 500);
+  }
+});
+
+// Platformer submissions endpoint - for admin to decide difficulty placement
+app.post('/api/platformer-submissions', async (c) => {
+  try {
+    const data = await c.req.json();
+    const { id, levelId, levelName, isNewLevel, record_data, submittedAt, submittedBy, status, adminDecidesDifficulty } = data;
+    
+    // Store in pending submissions with platformer flag
+    await c.env.DB.prepare(`
+      INSERT INTO pending_submissions (id, level_id, level_name, is_new_level, record_data, level_data, submitted_at, submitted_by, status, is_platformer, admin_decides_difficulty)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      levelId,
+      levelName,
+      isNewLevel ? 1 : 0,
+      record_data,
+      null, // No level data for existing levels
+      submittedAt,
+      submittedBy,
+      status || 'pending',
+      1, // Mark as platformer
+      adminDecidesDifficulty ? 1 : 0 // Admin will decide difficulty placement
+    ).run();
+    
+    return c.json({ 
+      success: true, 
+      id, 
+      message: 'Platformer submission created successfully. Admin will review and decide difficulty placement.',
+      requiresAdminReview: true,
+      adminDecidesDifficulty: true
+    }, 201);
+  } catch (error) {
+    console.error('Error creating platformer submission:', error);
+    return c.json({ error: 'Failed to create platformer submission', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
   }
 });
 
@@ -961,7 +1000,7 @@ app.post('/api/suggestions', async (c) => {
 });
 
 // Update suggestion status (admin only)
-app.put('/api/suggestions/:id', authenticateToken, async (c) => {
+app.put('/api/suggestions/:id', authenticateToken, async (c: any) => {
   try {
     const id = c.req.param('id');
     const { status, adminNotes } = await c.req.json();
