@@ -693,17 +693,17 @@ app.put('/api/pending-submissions/:id', async (c) => {
 });
 
 // === PLATFORMER DEMONS PROXY ===
-
-app.get('/api/platformer-demons', async (c) => {
-  try {
-    const response = await fetch('https://pemonlist.com/api/platformer-demons?limit=500');
-    const data = await response.json() as any;
-    return c.json(data);
-  } catch (error) {
-    console.error('Error fetching platformer demons:', error);
-    return c.json({ error: 'Failed to fetch platformer demons' }, 500);
-  }
-});
+// REMOVED: Pemonlist integration - using manual ranking only
+// app.get('/api/platformer-demons', async (c) => {
+//   try {
+//     const response = await fetch('https://pemonlist.com/api/platformer-demons?limit=500');
+//     const data = await response.json() as any;
+//     return c.json(data);
+//   } catch (error) {
+//     console.error('Error fetching platformer demons:', error);
+//     return c.json({ error: 'Failed to fetch platformer demons' }, 500);
+//   }
+// });
 
 // === SETTINGS ROUTES ===
 
@@ -1005,7 +1005,7 @@ app.get('/api/platformer-levels', async (c) => {
   try {
     const levels = await c.env.DB.prepare(`
       SELECT
-        id, hkgd_rank as hkgdRank, pemonlist_rank as pemonlistRank,
+        id, hkgd_rank as hkgdRank,
         name, creator, verifier, level_id as levelId, description, thumbnail,
         song_id as songId, song_name as songName, tags, date_added as dateAdded,
         pack, difficulty
