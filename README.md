@@ -1,3 +1,5 @@
+Boy if you still try to use the old password and jwt key it is not working now
+
 # HKGD Demon List API
 
 A Cloudflare Workers API for the Hong Kong Geometry Dash Demon List, built with Hono and D1 database.
