@@ -27,6 +27,21 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
 
+// Root route - API info
+app.get('/api', (c) => {
+  return c.json({
+    name: 'HKGD API',
+    version: '1.0.0',
+    endpoints: {
+      levels: '/api/levels',
+      platformer: '/api/platformer-levels',
+      auth: '/api/auth/login',
+      pending: '/api/pending',
+      changelog: '/api/changelog',
+    }
+  });
+});
+
 // Helper functions
 function getClientIP(c: any): string {
   let ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
