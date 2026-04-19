@@ -23,7 +23,15 @@ pattern = "api.hkgdl.dpdns.org/*"
 zone_name = "hkgdl.dpdns.org"
 
 [[routes]]
+pattern = "api.hkgdl.dpdns.org"
+zone_name = "hkgdl.dpdns.org"
+
+[[routes]]
 pattern = "hkgdl.dpdns.org/api/*"
+zone_name = "hkgdl.dpdns.org"
+
+[[routes]]
+pattern = "hkgdl.dpdns.org/api"
 zone_name = "hkgdl.dpdns.org"
 
 # === Local Development ===
