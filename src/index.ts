@@ -772,11 +772,18 @@ app.get('/api/gdbrowser/level/:levelId', async (c) => {
   try {
     const levelId = c.req.param('levelId');
     const response = await fetch(`https://gdbrowser.com/api/level/${levelId}`);
-    if (!response.ok) {
+    const data = await response.text();
+    
+    // Check for error response
+    if (data.startsWith('<') || data.startsWith('-1') || data.startsWith('Not Found')) {
       return c.json({ error: 'Level not found' }, 404);
     }
-    const data = await response.json();
-    return c.json(data);
+    
+    try {
+      return c.json(JSON.parse(data));
+    } catch {
+      return c.json({ error: 'Invalid response' }, 500);
+    }
   } catch (error) {
     console.error('Error fetching from GDBrowser:', error);
     return c.json({ error: 'Failed to fetch level' }, 500);
@@ -790,11 +797,16 @@ app.get('/api/gdbrowser/search', async (c) => {
       return c.json({ error: 'Query required' }, 400);
     }
     const response = await fetch(`https://gdbrowser.com/api/search?q=${encodeURIComponent(query)}`);
-    if (!response.ok) {
-      return c.json({ error: 'Search failed' }, 404);
+    const data = await response.text();
+    // GDBrowser returns "-1" for no results, treat as empty array
+    if (data === '-1') {
+      return c.json([]);
     }
-    const data = await response.json();
-    return c.json(data);
+    try {
+      return c.json(JSON.parse(data));
+    } catch {
+      return c.json({ error: 'Invalid response' }, 500);
+    }
   } catch (error) {
     console.error('Error searching GDBrowser:', error);
     return c.json({ error: 'Failed to search' }, 500);
