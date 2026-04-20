@@ -767,25 +767,38 @@ app.get('/api/platformer-demons', async (c) => {
   }
 });
 
-// === GDBrowser Proxy ===
+// === GDBrowser/History GD Proxy ===
 app.get('/api/gdbrowser/level/:levelId', async (c) => {
   try {
     const levelId = c.req.param('levelId');
-    const response = await fetch(`https://gdbrowser.com/api/level/${levelId}`);
-    const data = await response.text();
+    // Try history GD API first
+    const response = await fetch(`https://history.geometrydash.eu/api/v1/level/${levelId}`);
+    if (response.ok) {
+      const data = await response.json() as any;
+      if (data.success !== false) {
+        return c.json(data);
+      }
+    }
+    // Fallback to gdbrowser with key
+    const gdbResponse = await fetch(`https://www.gdbrowser.com/api/level/${levelId}?key=Wmfd2893gb7`, {
+      headers: {
+        'User-Agent': '',
+        'Accept': 'application/json'
+      }
+    });
+    const gdbData = await gdbResponse.text();
     
-    // Check for error response
-    if (data.startsWith('<') || data.startsWith('-1') || data.startsWith('Not Found')) {
+    if (gdbData.startsWith('<') || gdbData.startsWith('-1') || gdbData.startsWith('Not Found')) {
       return c.json({ error: 'Level not found' }, 404);
     }
     
     try {
-      return c.json(JSON.parse(data));
+      return c.json(JSON.parse(gdbData));
     } catch {
       return c.json({ error: 'Invalid response' }, 500);
     }
   } catch (error) {
-    console.error('Error fetching from GDBrowser:', error);
+    console.error('Error fetching level:', error);
     return c.json({ error: 'Failed to fetch level' }, 500);
   }
 });
@@ -796,19 +809,16 @@ app.get('/api/gdbrowser/search', async (c) => {
     if (!query) {
       return c.json({ error: 'Query required' }, 400);
     }
-    const response = await fetch(`https://gdbrowser.com/api/search?q=${encodeURIComponent(query)}`);
-    const data = await response.text();
-    // GDBrowser returns "-1" for no results, treat as empty array
-    if (data === '-1') {
-      return c.json([]);
+    // Use history GD search API - filter for platformer (cache_length = 5)
+    const filter = 'cache_length=5';
+    const response = await fetch(`https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${encodeURIComponent(query)}&limit=20&filter=${encodeURIComponent(filter)}`);
+    if (response.ok) {
+      const data = await response.json() as any;
+      return c.json(data.hits || []);
     }
-    try {
-      return c.json(JSON.parse(data));
-    } catch {
-      return c.json({ error: 'Invalid response' }, 500);
-    }
+    return c.json({ error: 'Search failed' }, 500);
   } catch (error) {
-    console.error('Error searching GDBrowser:', error);
+    console.error('Error searching:', error);
     return c.json({ error: 'Failed to search' }, 500);
   }
 });
