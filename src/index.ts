@@ -767,6 +767,40 @@ app.get('/api/platformer-demons', async (c) => {
   }
 });
 
+// === GDBrowser Proxy ===
+app.get('/api/gdbrowser/level/:levelId', async (c) => {
+  try {
+    const levelId = c.req.param('levelId');
+    const response = await fetch(`https://gdbrowser.com/api/level/${levelId}`);
+    if (!response.ok) {
+      return c.json({ error: 'Level not found' }, 404);
+    }
+    const data = await response.json();
+    return c.json(data);
+  } catch (error) {
+    console.error('Error fetching from GDBrowser:', error);
+    return c.json({ error: 'Failed to fetch level' }, 500);
+  }
+});
+
+app.get('/api/gdbrowser/search', async (c) => {
+  try {
+    const query = c.req.query('q');
+    if (!query) {
+      return c.json({ error: 'Query required' }, 400);
+    }
+    const response = await fetch(`https://gdbrowser.com/api/search?q=${encodeURIComponent(query)}`);
+    if (!response.ok) {
+      return c.json({ error: 'Search failed' }, 404);
+    }
+    const data = await response.json();
+    return c.json(data);
+  } catch (error) {
+    console.error('Error searching GDBrowser:', error);
+    return c.json({ error: 'Failed to search' }, 500);
+  }
+});
+
 // === SETTINGS ROUTES ===
 
 app.get('/api/settings', async (c) => {
