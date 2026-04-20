@@ -771,13 +771,15 @@ app.get('/api/platformer-demons', async (c) => {
 app.get('/api/gdbrowser/level/:levelId', async (c) => {
   try {
     const levelId = c.req.param('levelId');
-    // Try history GD API first
-    const response = await fetch(`https://history.geometrydash.eu/api/v1/level/${levelId}`);
+    // Try history GD API search to get level by ID
+    const response = await fetch(`https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${levelId}&limit=1&filter=online_id%3D${levelId}`);
     if (response.ok) {
       const data = await response.json() as any;
-      if (data.success !== false) {
-        return c.json(data);
+      // Return first hit if found
+      if (data.hits && data.hits.length > 0) {
+        return c.json(data.hits[0]);
       }
+      return c.json({ error: 'Level not found' }, 404);
     }
     // Fallback to gdbrowser with key
     const gdbResponse = await fetch(`https://www.gdbrowser.com/api/level/${levelId}?key=Wmfd2893gb7`, {
