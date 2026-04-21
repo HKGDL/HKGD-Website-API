@@ -1021,22 +1021,21 @@ app.post('/api/aredl-sync', authenticateToken, async (c) => {
 // Sync level details from History GD API (for rated levels only)
 app.post('/api/levels/sync-details', authenticateToken, async (c) => {
   try {
-    // Get all rated levels (have aredl_rank)
+    // Get all rated levels (have aredl_rank) - limit to 50 for timeout reasons
     const levels = await c.env.DB.prepare(`
       SELECT id, level_id, name, creator, verifier, thumbnail, song_id, song_name
       FROM levels
       WHERE aredl_rank IS NOT NULL
       ORDER BY hkgd_rank ASC
+      LIMIT 50
     `).all();
 
     const levelList = levels.results || [];
     const updates: any[] = [];
-    const errors: string[] = [];
 
-    // Process in batches of 5 to avoid rate limiting
+    // Process without delay for speed, History GD can handle it
     for (const level of levelList) {
       try {
-        // Fetch level details from History GD API
         const response = await fetch(
           `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${level.level_id}&limit=1&filter=online_id%3D${level.level_id}`
         );
@@ -1048,17 +1047,14 @@ app.post('/api/levels/sync-details', authenticateToken, async (c) => {
           if (hit) {
             const updatesObj: any = {};
 
-            // Update creator if different
             if (hit.author && hit.author !== level.creator) {
               updatesObj.creator = hit.author;
             }
 
-            // Update thumbnail if different
             if (hit.thumbnail && hit.thumbnail !== level.thumbnail) {
               updatesObj.thumbnail = hit.thumbnail;
             }
 
-            // Get first song if available (for platformer/classic with songs)
             if (hit.songs && hit.songs.length > 0) {
               const firstSong = hit.songs[0];
               const songName = `${firstSong.title} by ${firstSong.author}`;
@@ -1068,7 +1064,6 @@ app.post('/api/levels/sync-details', authenticateToken, async (c) => {
               }
             }
 
-            // Only update if there are changes
             if (Object.keys(updatesObj).length > 0) {
               const setClause = Object.keys(updatesObj).map(k => `${k} = ?`).join(', ');
               const values = Object.values(updatesObj);
@@ -1082,18 +1077,14 @@ app.post('/api/levels/sync-details', authenticateToken, async (c) => {
           }
         }
       } catch (err) {
-        errors.push(`Failed to fetch ${level.name}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        console.error(`Failed to fetch ${level.name}:`, err);
       }
-
-      // Small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     return c.json({
       success: true,
       message: `Synced details for ${updates.length} levels`,
       updatedLevels: updates.length,
-      errors: errors.slice(0, 5),
       details: updates.slice(0, 10)
     });
   } catch (error) {
@@ -1105,16 +1096,16 @@ app.post('/api/levels/sync-details', authenticateToken, async (c) => {
 // Sync platformer level details from History GD API
 app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => {
   try {
-    // Get all platformer levels
+    // Get all platformer levels - limit to 30 for timeout reasons
     const levels = await c.env.DB.prepare(`
       SELECT id, level_id, name, creator, verifier, thumbnail, song_id, song_name
       FROM platformer_levels
       ORDER BY hkgd_rank ASC
+      LIMIT 30
     `).all();
 
     const levelList = levels.results || [];
     const updates: any[] = [];
-    const errors: string[] = [];
 
     for (const level of levelList) {
       try {
@@ -1159,17 +1150,14 @@ app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => 
           }
         }
       } catch (err) {
-        errors.push(`Failed to fetch ${level.name}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        console.error(`Failed to fetch ${level.name}:`, err);
       }
-
-      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     return c.json({
       success: true,
       message: `Synced details for ${updates.length} platformer levels`,
       updatedLevels: updates.length,
-      errors: errors.slice(0, 5),
       details: updates.slice(0, 10)
     });
   } catch (error) {
@@ -1179,7 +1167,6 @@ app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => 
 });
 
 // === SUGGESTIONS ROUTES ===
-
 // Get all suggestions (public)
 app.get('/api/suggestions', async (c) => {
   try {
