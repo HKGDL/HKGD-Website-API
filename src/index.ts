@@ -1168,6 +1168,96 @@ app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => 
   }
 });
 
+// Bulk import platformer levels from data
+app.post('/api/platformer-levels/bulk-import', authenticateToken, async (c) => {
+  try {
+    const levels = await c.req.json();
+    if (!Array.isArray(levels)) {
+      return c.json({ error: 'Expected array of levels' }, 400);
+    }
+
+    const results: any[] = [];
+    const errors: string[] = [];
+
+    for (const levelData of levels) {
+      try {
+        const { name, levelId, hkgdRank, creator, records } = levelData;
+        const id = `plat-${levelId}`;
+
+        // Check if already exists
+        const existing = await c.env.DB.prepare('SELECT id FROM platformer_levels WHERE id = ?').bind(id).first();
+        if (existing) {
+          results.push({ name, status: 'skipped', reason: 'already exists' });
+          continue;
+        }
+
+        // Fetch details from History GD
+        let details: any = null;
+        try {
+          const response = await fetch(
+            `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${levelId}&limit=1&filter=online_id%3D${levelId}`
+          );
+          if (response.ok) {
+            const data = await response.json() as any;
+            details = data.hits?.[0];
+          }
+        } catch (e) {
+          // Ignore fetch errors
+        }
+
+        // Insert level
+        await c.env.DB.prepare(`
+          INSERT INTO platformer_levels (id, hkgd_rank, name, creator, verifier, level_id, thumbnail, tags, date_added)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          id,
+          hkgdRank,
+          details?.cache_level_name || name,
+          details?.cache_username || creator || 'Unknown',
+          details?.cache_username || creator || 'Unknown',
+          levelId,
+          details?.cache_level_string_available ? `https://levelthumbs.prevter.me/thumbnail/${levelId}` : null,
+          JSON.stringify(['Platformer']),
+          new Date().toISOString()
+        ).run();
+
+        // Insert records if any
+        if (records && Array.isArray(records)) {
+          for (const record of records) {
+            const recordId = `plat-rec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            await c.env.DB.prepare(`
+              INSERT INTO platformer_records (id, level_id, player, date, video_url, fps, cbf)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              recordId,
+              id,
+              record.player,
+              record.date,
+              record.videoUrl || null,
+              record.fps || 60,
+              record.cbf || false
+            ).run();
+          }
+        }
+
+        results.push({ name, status: 'added', hkgdRank });
+      } catch (err) {
+        errors.push(`${levelData.name}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      }
+    }
+
+    return c.json({
+      success: true,
+      message: `Imported ${results.filter(r => r.status === 'added').length} levels`,
+      results: results.slice(0, 20),
+      errors: errors.slice(0, 10)
+    });
+  } catch (error) {
+    console.error('Bulk import error:', error);
+    return c.json({ error: 'Failed to bulk import', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
 // === SUGGESTIONS ROUTES ===
 // Get all suggestions (public)
 app.get('/api/suggestions', async (c) => {
