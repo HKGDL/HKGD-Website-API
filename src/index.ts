@@ -1018,6 +1018,166 @@ app.post('/api/aredl-sync', authenticateToken, async (c) => {
   }
 });
 
+// Sync level details from History GD API (for rated levels only)
+app.post('/api/levels/sync-details', authenticateToken, async (c) => {
+  try {
+    // Get all rated levels (have aredl_rank)
+    const levels = await c.env.DB.prepare(`
+      SELECT id, level_id, name, creator, verifier, thumbnail, song_id, song_name
+      FROM levels
+      WHERE aredl_rank IS NOT NULL
+      ORDER BY hkgd_rank ASC
+    `).all();
+
+    const levelList = levels.results || [];
+    const updates: any[] = [];
+    const errors: string[] = [];
+
+    // Process in batches of 5 to avoid rate limiting
+    for (const level of levelList) {
+      try {
+        // Fetch level details from History GD API
+        const response = await fetch(
+          `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${level.level_id}&limit=1&filter=online_id%3D${level.level_id}`
+        );
+
+        if (response.ok) {
+          const data = await response.json() as any;
+          const hit = data.hits?.[0];
+
+          if (hit) {
+            const updatesObj: any = {};
+
+            // Update creator if different
+            if (hit.author && hit.author !== level.creator) {
+              updatesObj.creator = hit.author;
+            }
+
+            // Update thumbnail if different
+            if (hit.thumbnail && hit.thumbnail !== level.thumbnail) {
+              updatesObj.thumbnail = hit.thumbnail;
+            }
+
+            // Get first song if available (for platformer/classic with songs)
+            if (hit.songs && hit.songs.length > 0) {
+              const firstSong = hit.songs[0];
+              const songName = `${firstSong.title} by ${firstSong.author}`;
+              if (songName !== level.song_name) {
+                updatesObj.song_name = songName;
+                updatesObj.song_id = firstSong.id?.toString();
+              }
+            }
+
+            // Only update if there are changes
+            if (Object.keys(updatesObj).length > 0) {
+              const setClause = Object.keys(updatesObj).map(k => `${k} = ?`).join(', ');
+              const values = Object.values(updatesObj);
+              
+              await c.env.DB.prepare(`
+                UPDATE levels SET ${setClause} WHERE id = ?
+              `).bind(...values, level.id).run();
+
+              updates.push({ id: level.id, name: level.name, changes: updatesObj });
+            }
+          }
+        }
+      } catch (err) {
+        errors.push(`Failed to fetch ${level.name}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      }
+
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    return c.json({
+      success: true,
+      message: `Synced details for ${updates.length} levels`,
+      updatedLevels: updates.length,
+      errors: errors.slice(0, 5),
+      details: updates.slice(0, 10)
+    });
+  } catch (error) {
+    console.error('Level details sync error:', error);
+    return c.json({ error: 'Failed to sync level details', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
+// Sync platformer level details from History GD API
+app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => {
+  try {
+    // Get all platformer levels
+    const levels = await c.env.DB.prepare(`
+      SELECT id, level_id, name, creator, verifier, thumbnail, song_id, song_name
+      FROM platformer_levels
+      ORDER BY hkgd_rank ASC
+    `).all();
+
+    const levelList = levels.results || [];
+    const updates: any[] = [];
+    const errors: string[] = [];
+
+    for (const level of levelList) {
+      try {
+        const response = await fetch(
+          `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${level.level_id}&limit=1&filter=online_id%3D${level.level_id}`
+        );
+
+        if (response.ok) {
+          const data = await response.json() as any;
+          const hit = data.hits?.[0];
+
+          if (hit) {
+            const updatesObj: any = {};
+
+            if (hit.author && hit.author !== level.creator) {
+              updatesObj.creator = hit.author;
+            }
+
+            if (hit.thumbnail && hit.thumbnail !== level.thumbnail) {
+              updatesObj.thumbnail = hit.thumbnail;
+            }
+
+            if (hit.songs && hit.songs.length > 0) {
+              const firstSong = hit.songs[0];
+              const songName = `${firstSong.title} by ${firstSong.author}`;
+              if (songName !== level.song_name) {
+                updatesObj.song_name = songName;
+                updatesObj.song_id = firstSong.id?.toString();
+              }
+            }
+
+            if (Object.keys(updatesObj).length > 0) {
+              const setClause = Object.keys(updatesObj).map(k => `${k} = ?`).join(', ');
+              const values = Object.values(updatesObj);
+              
+              await c.env.DB.prepare(`
+                UPDATE platformer_levels SET ${setClause} WHERE id = ?
+              `).bind(...values, level.id).run();
+
+              updates.push({ id: level.id, name: level.name, changes: updatesObj });
+            }
+          }
+        }
+      } catch (err) {
+        errors.push(`Failed to fetch ${level.name}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    return c.json({
+      success: true,
+      message: `Synced details for ${updates.length} platformer levels`,
+      updatedLevels: updates.length,
+      errors: errors.slice(0, 5),
+      details: updates.slice(0, 10)
+    });
+  } catch (error) {
+    console.error('Platformer level details sync error:', error);
+    return c.json({ error: 'Failed to sync platformer level details', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
 // === SUGGESTIONS ROUTES ===
 
 // Get all suggestions (public)
