@@ -1047,21 +1047,22 @@ app.post('/api/levels/sync-details', authenticateToken, async (c) => {
           if (hit) {
             const updatesObj: any = {};
 
-            if (hit.author && hit.author !== level.creator) {
-              updatesObj.creator = hit.author;
+            // Update creator (cache_username)
+            if (hit.cache_username && hit.cache_username !== level.creator) {
+              updatesObj.creator = hit.cache_username;
             }
 
-            if (hit.thumbnail && hit.thumbnail !== level.thumbnail) {
-              updatesObj.thumbnail = hit.thumbnail;
+            // Update thumbnail using levelthumbs
+            const newThumbnail = hit.cache_level_string_available 
+              ? `https://levelthumbs.prevter.me/thumbnail/${level.level_id}`
+              : null;
+            if (newThumbnail && newThumbnail !== level.thumbnail) {
+              updatesObj.thumbnail = newThumbnail;
             }
 
-            if (hit.songs && hit.songs.length > 0) {
-              const firstSong = hit.songs[0];
-              const songName = `${firstSong.title} by ${firstSong.author}`;
-              if (songName !== level.song_name) {
-                updatesObj.song_name = songName;
-                updatesObj.song_id = firstSong.id?.toString();
-              }
+            // Update song ID if available
+            if (hit.cache_song_id && hit.cache_song_id !== level.song_id?.toString()) {
+              updatesObj.song_id = hit.cache_song_id.toString();
             }
 
             if (Object.keys(updatesObj).length > 0) {
@@ -1120,21 +1121,22 @@ app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => 
           if (hit) {
             const updatesObj: any = {};
 
-            if (hit.author && hit.author !== level.creator) {
-              updatesObj.creator = hit.author;
+            // Update creator (cache_username)
+            if (hit.cache_username && hit.cache_username !== level.creator) {
+              updatesObj.creator = hit.cache_username;
             }
 
-            if (hit.thumbnail && hit.thumbnail !== level.thumbnail) {
-              updatesObj.thumbnail = hit.thumbnail;
+            // Update thumbnail using levelthumbs
+            const newThumbnail = hit.cache_level_string_available 
+              ? `https://levelthumbs.prevter.me/thumbnail/${level.level_id}`
+              : null;
+            if (newThumbnail && newThumbnail !== level.thumbnail) {
+              updatesObj.thumbnail = newThumbnail;
             }
 
-            if (hit.songs && hit.songs.length > 0) {
-              const firstSong = hit.songs[0];
-              const songName = `${firstSong.title} by ${firstSong.author}`;
-              if (songName !== level.song_name) {
-                updatesObj.song_name = songName;
-                updatesObj.song_id = firstSong.id?.toString();
-              }
+            // Update song ID if available
+            if (hit.cache_song_id && hit.cache_song_id !== level.song_id?.toString()) {
+              updatesObj.song_id = hit.cache_song_id.toString();
             }
 
             if (Object.keys(updatesObj).length > 0) {
