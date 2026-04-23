@@ -1598,4 +1598,89 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-export default app;
+// Cron scheduled handler - AREDL auto-sync at 12:00 PM GMT+8 daily
+export default {
+  fetch: app.fetch,
+  scheduled: async (controller: any, env: any, ctx: any) => {
+    const response = await fetch(`https://api.aredl.net/v2/api/aredl/levels`);
+    if (!response.ok) {
+      console.error('AREDL sync failed: Failed to fetch AREDL data');
+      return;
+    }
+    const aredlLevels = await response.json() as any[];
+    
+    const currentLevels = await env.DB.prepare(`
+      SELECT id, name, aredl_rank as aredlRank FROM levels
+    `).all();
+    
+    const levelMap = new Map<string, { id: string; name: string; oldRank: number | null }>();
+    for (const level of (currentLevels.results || [])) {
+      levelMap.set((level as any).name.toLowerCase().trim(), {
+        id: (level as any).id,
+        name: (level as any).name,
+        oldRank: (level as any).aredlRank
+      });
+    }
+    
+    const aredlDataMap = new Map<string, any>();
+    for (const aredlLevel of aredlLevels) {
+      const name = aredlLevel.name?.toLowerCase().trim();
+      if (name) {
+        aredlDataMap.set(name, aredlLevel);
+      }
+    }
+    
+    let updatedCount = 0;
+    for (const [name, levelInfo] of levelMap) {
+      const aredlData = aredlDataMap.get(name);
+      if (aredlData) {
+        const newRank = aredlData.position || aredlData.rank;
+        const edelEnjoyment = aredlData.edel_enjoyment ?? null;
+        const nlwTier = aredlData.nlw_tier ?? null;
+        const gddlTier = aredlData.gddl_tier ?? null;
+        
+        await env.DB.prepare(`
+          UPDATE levels SET aredl_rank = ?, edel_enjoyment = ?, nlw_tier = ?, gddl_tier = ? WHERE id = ?
+        `).bind(newRank, edelEnjoyment, nlwTier, gddlTier, levelInfo.id).run();
+        updatedCount++;
+      }
+    }
+    
+    const sortedLevels = await env.DB.prepare(`
+      SELECT id FROM levels WHERE aredl_rank IS NOT NULL ORDER BY aredl_rank ASC
+    `).all();
+    
+    let hkgdRank = 1;
+    for (const level of (sortedLevels.results || [])) {
+      await env.DB.prepare(`UPDATE levels SET hkgd_rank = ? WHERE id = ?`).bind(hkgdRank, (level as any).id).run();
+      hkgdRank++;
+    }
+    
+    const unrankedLevels = await env.DB.prepare(`
+      SELECT id FROM levels WHERE aredl_rank IS NULL ORDER BY hkgd_rank ASC
+    `).all();
+    
+    for (const level of (unrankedLevels.results || [])) {
+      await env.DB.prepare(`UPDATE levels SET hkgd_rank = ? WHERE id = ?`).bind(hkgdRank, (level as any).id).run();
+      hkgdRank++;
+    }
+    
+    const today = new Date();
+    const dateStr = `${today.getFullYear().toString().slice(-2)}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
+    
+    await env.DB.prepare(`
+      INSERT INTO changelog (id, date, level_name, level_id, change_type, description, list_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      `sync-${Date.now()}`,
+      dateStr,
+      'AREDL Sync',
+      'system',
+      'sync',
+      `Auto-sync: Updated ${updatedCount} level rankings.`,
+      'classic'
+    ).run();
+    
+    console.log(`AREDL auto-sync completed: ${updatedCount} levels updated`);
+  }
+};
