@@ -39,6 +39,6 @@ zone_name = "hkgdl.dpdns.org"
 port = 8787
 local_protocol = "http"
 
-# === Production Settings ===
-[observability]
-enabled = true
+# === Cron Trigger - Daily AREDL Sync at 12:00 PM GMT+8 (04:00 UTC) ===
+[triggers]
+crons = ["0 4 * * *"]
