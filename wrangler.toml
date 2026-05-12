@@ -12,6 +12,8 @@ database_id = "38dec10e-48f3-4817-b227-a825752d9f68"
 # === Environment Variables ===
 [vars]
 ENVIRONMENT = "production"
+INDEXNOW_KEY = "56c7141e78ad1f1fd11ca5a7929f8957"
+SITE_HOSTNAME = "hkgdl.dpdns.org"
 
 # Secrets (set via: wrangler secret put JWT_SECRET)
 # JWT_SECRET - your JWT signing secret

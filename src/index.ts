@@ -11,6 +11,8 @@ type Bindings = {
   JWT_SECRET: string;
   ADMIN_PASSWORD: string;
   SUGGESTIONS_PASSWORD: string;
+  INDEXNOW_KEY: string;
+  SITE_HOSTNAME: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -96,6 +98,74 @@ async function recordFailedLogin(db: D1Database, ip: string): Promise<number> {
 
 async function resetFailedAttempts(db: D1Database, ip: string): Promise<void> {
   await db.prepare('DELETE FROM ip_bans WHERE ip = ?').bind(ip).run();
+}
+
+const INDEXNOW_SEARCH_ENGINES = [
+  'https://www.bing.com/indexnow',
+];
+
+async function submitUrlToIndexNow(env: Bindings, url: string): Promise<void> {
+  const key = env.INDEXNOW_KEY;
+  if (!key) {
+    console.log('[IndexNow] No key configured, skipping');
+    return;
+  }
+
+  const hostname = env.SITE_HOSTNAME || 'hkgdl.dpdns.org';
+  const siteUrl = url.startsWith('http') ? url : `https://${hostname}${url}`;
+
+  console.log(`[IndexNow] Submitting: ${siteUrl}`);
+
+  for (const engine of INDEXNOW_SEARCH_ENGINES) {
+    try {
+      const submitUrl = `${engine}?url=${encodeURIComponent(siteUrl)}&key=${key}`;
+      const response = await fetch(submitUrl, { method: 'GET' });
+      console.log(`[IndexNow] ${engine} responded with ${response.status}`);
+    } catch (err) {
+      console.error(`[IndexNow] Failed to submit to ${engine}:`, err);
+    }
+  }
+}
+
+async function submitUrlsBatchToIndexNow(env: Bindings, urls: string[]): Promise<void> {
+  const key = env.INDEXNOW_KEY;
+  if (!key || urls.length === 0) {
+    return;
+  }
+
+  const hostname = env.SITE_HOSTNAME || 'hkgdl.dpdns.org';
+  const siteUrls = urls.map(u => u.startsWith('http') ? u : `https://${hostname}${u}`);
+
+  console.log(`[IndexNow] Batch submitting ${siteUrls.length} URLs`);
+
+  const payload = {
+    host: hostname,
+    key: key,
+    urlList: siteUrls
+  };
+
+  for (const engine of INDEXNOW_SEARCH_ENGINES) {
+    try {
+      const response = await fetch(engine, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      console.log(`[IndexNow] Batch to ${engine} responded with ${response.status}`);
+    } catch (err) {
+      console.error(`[IndexNow] Batch failed for ${engine}:`, err);
+    }
+  }
+}
+
+function notifyContentChanged(env: Bindings, extraUrls?: string[]) {
+  const urls: string[] = ['/'];
+  if (extraUrls) {
+    urls.push(...extraUrls);
+  }
+  submitUrlsBatchToIndexNow(env, urls).catch(err => {
+    console.error('[IndexNow] Background submission error:', err);
+  });
 }
 
 // JWT Authentication Middleware
@@ -300,6 +370,7 @@ app.post('/api/levels', authenticateToken, async (c) => {
       JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(gddlTier), safeBind(nlwTier), safeBind(edelEnjoyment)
     ).run();
     
+    notifyContentChanged(c.env);
     return c.json({ id, message: 'Level created successfully' }, 201);
   } catch (error) {
     console.error('Error creating level:', error);
@@ -332,6 +403,7 @@ app.put('/api/levels/:id', authenticateToken, async (c) => {
       c.req.param('id')
     ).run();
     
+    notifyContentChanged(c.env);
     return c.json({ message: 'Level updated successfully' });
   } catch (error) {
     console.error('Error updating level:', error);
@@ -342,6 +414,7 @@ app.put('/api/levels/:id', authenticateToken, async (c) => {
 app.delete('/api/levels/:id', authenticateToken, async (c) => {
   try {
     await c.env.DB.prepare('DELETE FROM levels WHERE id = ?').bind(c.req.param('id')).run();
+    notifyContentChanged(c.env);
     return c.json({ message: 'Level deleted successfully' });
   } catch (error) {
     console.error('Error deleting level:', error);
@@ -377,6 +450,7 @@ app.post('/api/levels/:levelId/records', authenticateToken, async (c) => {
       safeBind(attempts)
     ).run();
     
+    notifyContentChanged(c.env);
     return c.json({ message: 'Record added successfully', id: result.meta.last_row_id }, 201);
   } catch (error) {
     console.error('Error adding record:', error);
@@ -1006,6 +1080,7 @@ app.post('/api/aredl-sync', authenticateToken, async (c) => {
       'classic'
     ).run();
     
+    notifyContentChanged(c.env);
     return c.json({
       success: true,
       message: `Synced ${updates.length} levels with AREDL`,
@@ -1456,6 +1531,7 @@ app.post('/api/platformer-levels', authenticateToken, async (c) => {
       JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(difficulty)
     ).run();
     
+    notifyContentChanged(c.env);
     return c.json({ id, message: 'Platformer level created successfully' }, 201);
   } catch (error) {
     console.error('Error creating platformer level:', error);
@@ -1487,6 +1563,7 @@ app.put('/api/platformer-levels/:id', authenticateToken, async (c) => {
       c.req.param('id')
     ).run();
     
+    notifyContentChanged(c.env);
     return c.json({ message: 'Platformer level updated successfully' });
   } catch (error) {
     console.error('Error updating platformer level:', error);
@@ -1497,6 +1574,7 @@ app.put('/api/platformer-levels/:id', authenticateToken, async (c) => {
 app.delete('/api/platformer-levels/:id', authenticateToken, async (c) => {
   try {
     await c.env.DB.prepare('DELETE FROM platformer_levels WHERE id = ?').bind(c.req.param('id')).run();
+    notifyContentChanged(c.env);
     return c.json({ message: 'Platformer level deleted successfully' });
   } catch (error) {
     console.error('Error deleting platformer level:', error);
@@ -1530,6 +1608,7 @@ app.post('/api/platformer-levels/:levelId/records', authenticateToken, async (c)
       safeBind(attempts)
     ).run();
     
+    notifyContentChanged(c.env);
     return c.json({ message: 'Platformer record added successfully', id: result.meta.last_row_id }, 201);
   } catch (error) {
     console.error('Error adding platformer record:', error);
@@ -1680,6 +1759,30 @@ export default {
       `Auto-sync: Updated ${updatedCount} level rankings.`,
       'classic'
     ).run();
+    
+    if (updatedCount > 0 && env.INDEXNOW_KEY) {
+      const hostname = env.SITE_HOSTNAME || 'hkgdl.dpdns.org';
+      const siteUrls = [`https://${hostname}/`];
+      
+      const payload = {
+        host: hostname,
+        key: env.INDEXNOW_KEY,
+        urlList: siteUrls
+      };
+
+      for (const engine of ['https://www.bing.com/indexnow']) {
+        try {
+          await fetch(engine, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json; charset=utf-8' },
+            body: JSON.stringify(payload)
+          });
+          console.log(`[Cron IndexNow] Submitted homepage to ${engine}`);
+        } catch (err) {
+          console.error('[Cron IndexNow] Error:', err);
+        }
+      }
+    }
     
     console.log(`AREDL auto-sync completed: ${updatedCount} levels updated`);
   }
