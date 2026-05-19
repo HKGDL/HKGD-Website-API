@@ -13,6 +13,9 @@ type Bindings = {
   SUGGESTIONS_PASSWORD: string;
   INDEXNOW_KEY: string;
   SITE_HOSTNAME: string;
+  GOOGLE_SHEETS_API_KEY?: string;
+  GOOGLE_SHEET_ID?: string;
+  GOOGLE_SHEET_RANGE?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -1090,6 +1093,160 @@ app.post('/api/aredl-sync', authenticateToken, async (c) => {
   } catch (error) {
     console.error('AREDL sync error:', error);
     return c.json({ error: 'Failed to sync with AREDL', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
+// === GOOGLE SHEETS SYNC ===
+
+app.post('/api/google-sheets/sync', authenticateToken, async (c) => {
+  try {
+    const apiKey = c.env.GOOGLE_SHEETS_API_KEY;
+    const spreadsheetId = c.env.GOOGLE_SHEET_ID;
+    const sheetRange = c.env.GOOGLE_SHEET_RANGE || "'Classic Demon'!A1:GX2000";
+
+    if (!apiKey || !spreadsheetId) {
+      return c.json({ error: 'Google Sheets not configured' }, 500);
+    }
+
+    // 1. Fetch sheet data
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetRange)}?key=${apiKey}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      return c.json({ error: 'Failed to fetch sheet data', details: await response.text() }, 500);
+    }
+
+    const rows = (await response.json() as any).values || [];
+    if (rows.length < 2) return c.json({ error: 'No data found' }, 400);
+
+    // 2. Pre-fetch existing levels by level_id (game ID) — DB may use hkgd-N style primary keys
+    const existingLevels = await c.env.DB.prepare('SELECT id, level_id as gameId, name, aredl_rank as aredlRank FROM levels').all();
+    const levelByGameId = new Map<string, any>();
+    const existingNames = new Set<string>();
+    for (const l of (existingLevels.results || [])) {
+      const gameId = (l as any).gameId;
+      if (gameId) levelByGameId.set(gameId, l);
+      if ((l as any).name) existingNames.add((l as any).name.toLowerCase());
+    }
+
+    const allRecords = await c.env.DB.prepare('SELECT level_id, player, date FROM records').all();
+    const existingRecordSet = new Set(
+      (allRecords.results || []).map((r: any) => `${r.level_id}|${r.player}|${r.date}`)
+    );
+
+    // 3. Parse rows (col: 0=Placement, 1=Enj., 2=ID, 3=Name, 4=Victors, then groups of 4 per player)
+    const now = new Date().toISOString();
+    const results: any[] = [];
+    let addedLevels = 0, updatedLevels = 0, addedRecords = 0;
+
+    const levelsToInsert: any[] = [];
+    const recordsToInsert: any[] = [];
+
+    for (const row of rows.slice(1)) {
+      if (row.length < 5) continue;
+      const placement = row[0]?.toString().trim();
+      const gameId = row[2]?.toString().trim();
+      const levelName = row[3]?.toString().trim();
+      if (!gameId || !levelName) continue;
+      // Column E (index 4) = victors count — skip if not a pure positive integer
+      // (reject strings like "10% (shardscapes)" which parseInt would extract 10 from)
+      const victorsRaw = row[4]?.toString().trim();
+      if (!victorsRaw || !/^\d+$/.test(victorsRaw) || parseInt(victorsRaw, 10) < 1) continue;
+
+      // Skip if a level with the same name already exists in the DB
+      if (existingNames.has(levelName.toLowerCase())) continue;
+
+      const aredlRank = placement && !isNaN(Number(placement)) ? parseInt(placement) : null;
+
+      // If level exists in DB, only add new records — don't touch the level itself
+      const existing = levelByGameId.get(gameId);
+      const dbId = existing ? (existing as any).id : gameId;
+
+      if (!existing) {
+        levelsToInsert.push({ id: gameId, gameId, name: levelName, aredlRank });
+        addedLevels++;
+        results.push({ name: levelName, action: 'added', aredlRank });
+      }
+
+      for (let pi = 0; pi < 50; pi++) {
+        const base = 5 + pi * 4;
+        if (base >= row.length) break;
+        const date = row[base]?.toString().trim();
+        const player = row[base + 1]?.toString().trim();
+        if (!date || !player) continue;
+        const video = (base + 2 < row.length) ? row[base + 2]?.toString().trim() : '';
+        const fpsRaw = (base + 3 < row.length) ? row[base + 3]?.toString().trim() : '';
+        if (!existingRecordSet.has(`${dbId}|${player}|${date}`)) {
+          const fps = fpsRaw && fpsRaw !== '/' ? parseInt(fpsRaw.replace(/[^0-9]/g, '')) || null : null;
+          const videoUrl = video && video !== '/' && video.length > 0 ? video : null;
+          recordsToInsert.push({ levelId: dbId, player, date, videoUrl, fps });
+          existingRecordSet.add(`${dbId}|${player}|${date}`);
+          addedRecords++;
+        }
+      }
+    }
+
+    // 4. INSERT new levels — for each row, use INSERT OR IGNORE so we
+    // don't fail on id conflicts (level already in DB with a different pk).
+    // IMPORTANT: creator & verifier are NOT NULL in the DB, use '' not NULL.
+    const insertStmts: any[] = [];
+    for (const l of levelsToInsert) {
+      insertStmts.push(c.env.DB.prepare(`
+        INSERT OR IGNORE INTO levels (id, hkgd_rank, aredl_rank, name, creator, verifier, level_id, tags, date_added)
+        VALUES (?, 0, ?, ?, '', '', ?, ?, ?)
+      `).bind(l.id, l.aredlRank, l.name, l.gameId,
+        JSON.stringify(l.aredlRank ? ['Overall'] : []), now
+      ));
+    }
+    if (insertStmts.length) await c.env.DB.batch(insertStmts);
+
+    // 5. Batch INSERT records — D1 batch limit is 100 stmts, but we can
+    // safely ignore FK errors by catching the batch-level error and
+    // falling back to individual inserts for those that fail
+    const BATCH_SIZE = 80;
+    for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
+      const chunk = recordsToInsert.slice(i, i + BATCH_SIZE);
+      const stmts = chunk.map(r => c.env.DB.prepare(`
+        INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
+        VALUES (?, ?, ?, ?, ?, 0, NULL)
+      `).bind(r.levelId, r.player, r.date, r.videoUrl, r.fps));
+      try {
+        await c.env.DB.batch(stmts);
+      } catch (batchErr) {
+        console.error('Records batch failed, falling back to individual inserts:', String(batchErr));
+        for (const r of chunk) {
+          try {
+            await c.env.DB.prepare(`
+              INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
+              VALUES (?, ?, ?, ?, ?, 0, NULL)
+            `).bind(r.levelId, r.player, r.date, r.videoUrl, r.fps).run();
+          } catch (e) {
+            console.error('Skipping record:', r.levelId, r.player, r.date, String(e));
+          }
+        }
+      }
+    }
+
+    // 6. Changelog — don't touch existing levels or re-sort ranks
+    const d = new Date();
+    const dateStr = `${d.getFullYear().toString().slice(-2)}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+    await c.env.DB.prepare(`
+      INSERT INTO changelog (id, date, level_name, level_id, change_type, description, list_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(`gsheet-${Date.now()}`, dateStr, 'Google Sheets Sync', 'system', 'sync',
+      `Added ${addedLevels} levels · Updated ${updatedLevels} ranks · Added ${addedRecords} records`,
+      'classic'
+    ).run();
+
+    return c.json({
+      success: true,
+      message: `Synced: ${addedLevels} added, ${updatedLevels} ranks updated, ${addedRecords} records`,
+      total: rows.length - 1,
+      addedLevels, updatedLevels, addedRecords,
+      results: results.slice(0, 20)
+    });
+  } catch (error) {
+    console.error('Google Sheets sync error:', error);
+    return c.json({ error: 'Sync failed', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
 

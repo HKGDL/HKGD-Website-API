@@ -18,6 +18,9 @@ SITE_HOSTNAME = "hkgdl.dpdns.org"
 # Secrets (set via: wrangler secret put JWT_SECRET)
 # JWT_SECRET - your JWT signing secret
 # ADMIN_PASSWORD - your admin login password
+# GOOGLE_SHEETS_API_KEY - Google Sheets API key (for admin Google Sheets sync)
+# GOOGLE_SHEET_ID - the spreadsheet ID from the Google Sheets URL
+# GOOGLE_SHEET_RANGE - (optional) sheet range, default: 'Classic Demon'!A1:GX2000
 
 # === Custom Domain Routes ===
 [[routes]]
