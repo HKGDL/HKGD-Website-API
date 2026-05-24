@@ -1831,6 +1831,41 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
   }
 });
 
+// === MOTD ROUTES ===
+
+app.get('/api/motd', async (c) => {
+  try {
+    const motd = await c.env.DB.prepare("SELECT message FROM motd WHERE id = 'main'").first();
+    return c.json({ message: motd?.message || '' });
+  } catch (error) {
+    console.error('Error fetching MOTD:', error);
+    return c.json({ message: '' });
+  }
+});
+
+app.put('/api/motd', authenticateToken, async (c: any) => {
+  try {
+    const { message } = await c.req.json();
+    const updatedAt = new Date().toISOString();
+    const user = c.get('user') as any;
+    const updatedBy = user?.isAdmin === true ? 'admin' : 'suggestions';
+
+    await c.env.DB.prepare(`
+      INSERT INTO motd (id, message, updated_at, updated_by)
+      VALUES ('main', ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        message = excluded.message,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `).bind(message, updatedAt, updatedBy).run();
+
+    return c.json({ message, updatedAt, updatedBy });
+  } catch (error) {
+    console.error('Error updating MOTD:', error);
+    return c.json({ error: 'Failed to update MOTD' }, 500);
+  }
+});
+
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 

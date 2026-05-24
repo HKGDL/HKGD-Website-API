@@ -561,6 +561,13 @@ CREATE TABLE ip_bans (
 );
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
 INSERT INTO "settings" ("key","value","updated_at") VALUES('april_fools_enabled','false','2026-04-01T13:27:47.624Z');
+CREATE TABLE IF NOT EXISTS motd (
+    id TEXT PRIMARY KEY DEFAULT 'main',
+    message TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by TEXT
+);
+INSERT INTO "motd" ("id","message","updated_at","updated_by") VALUES('main','Welcome to the HKGD Demon List!','2026-05-24T00:00:00.000Z','system');
 CREATE TABLE suggestions (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL DEFAULT 'issue',
