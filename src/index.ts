@@ -213,6 +213,8 @@ app.post('/api/auth/login', async (c) => {
     const suggestionsPassword = c.env.SUGGESTIONS_PASSWORD;
     const jwtSecret = c.env.JWT_SECRET;
     
+    const motdPassword = c.env.MOTD_ADMIN_PASSWORD;
+
     if (!adminPassword || !suggestionsPassword || !jwtSecret) {
       return c.json({ error: 'Server configuration error' }, 500);
     }
@@ -257,6 +259,23 @@ app.post('/api/auth/login', async (c) => {
       return c.json({
         success: true,
         user: { isAdmin: 'suggestions' },
+        token
+      });
+    }
+    
+    // Check for MOTD-only password
+    if (motdPassword && password === motdPassword) {
+      await resetFailedAttempts(c.env.DB, ip);
+      
+      const secret = new TextEncoder().encode(jwtSecret);
+      const token = await new SignJWT({ isAdmin: 'motd', timestamp: Date.now() })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setExpirationTime('2h')
+        .sign(secret);
+      
+      return c.json({
+        success: true,
+        user: { isAdmin: 'motd' },
         token
       });
     }
@@ -1845,26 +1864,6 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
 });
 
 // === MOTD ROUTES ===
-
-app.post('/api/motd/verify-password', async (c) => {
-  try {
-    const { password } = await c.req.json();
-    const correctPassword = c.env.MOTD_ADMIN_PASSWORD;
-
-    if (!correctPassword) {
-      return c.json({ error: 'MOTD password not configured' }, 500);
-    }
-
-    if (password === correctPassword) {
-      return c.json({ success: true });
-    }
-
-    return c.json({ success: false, error: 'Invalid password' }, 401);
-  } catch (error) {
-    console.error('Error verifying MOTD password:', error);
-    return c.json({ error: 'Verification failed' }, 500);
-  }
-});
 
 app.get('/api/motd', async (c) => {
   try {
