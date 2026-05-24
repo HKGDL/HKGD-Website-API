@@ -11,6 +11,7 @@ type Bindings = {
   JWT_SECRET: string;
   ADMIN_PASSWORD: string;
   SUGGESTIONS_PASSWORD: string;
+  MOTD_ADMIN_PASSWORD: string;
   INDEXNOW_KEY: string;
   SITE_HOSTNAME: string;
   GOOGLE_SHEETS_API_KEY?: string;
@@ -26,7 +27,19 @@ app.use('*', secureHeaders());
 
 // CORS configuration
 app.use('*', cors({
-  origin: ['http://localhost:5173', 'https://hkgdl.dpdns.org', 'https://hkgd-website-frontend.hkgdl.workers.dev', 'geode://*', 'http://localhost:*', 'https://*.hkgdl.dpdns.org'],
+  origin: (origin) => {
+    const allowed = [
+      'http://localhost:5173',
+      'http://localhost:4173',
+      'https://hkgdl.dpdns.org',
+      'https://hkgd-website-frontend.hkgdl.workers.dev',
+      'https://hkgdl-frontend-v2.pages.dev',
+    ];
+    if (!origin || allowed.some(a => origin.startsWith(a) || origin === a)) return origin;
+    // Allow geode:// protocol
+    if (origin.startsWith('geode://')) return origin;
+    return null;
+  },
   credentials: true,
   allowHeaders: ['Content-Type', 'Authorization'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -1832,6 +1845,26 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
 });
 
 // === MOTD ROUTES ===
+
+app.post('/api/motd/verify-password', async (c) => {
+  try {
+    const { password } = await c.req.json();
+    const correctPassword = c.env.MOTD_ADMIN_PASSWORD;
+
+    if (!correctPassword) {
+      return c.json({ error: 'MOTD password not configured' }, 500);
+    }
+
+    if (password === correctPassword) {
+      return c.json({ success: true });
+    }
+
+    return c.json({ success: false, error: 'Invalid password' }, 401);
+  } catch (error) {
+    console.error('Error verifying MOTD password:', error);
+    return c.json({ error: 'Verification failed' }, 500);
+  }
+});
 
 app.get('/api/motd', async (c) => {
   try {
