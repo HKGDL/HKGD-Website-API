@@ -1950,10 +1950,31 @@ app.put('/api/motd', authenticateToken, async (c: any) => {
 // Health check
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-// Cron scheduled handler - AREDL auto-sync at 12:00 PM GMT+8 daily
+// Cron scheduled handler - AREDL auto-sync at 12:00 PM GMT+8 daily, MOTD sync at 9:00 AM GMT+8 daily
 export default {
   fetch: app.fetch,
   scheduled: async (controller: any, env: any, ctx: any) => {
+    // MOTD sync from Discord at 01:00 UTC (09:00 GMT+8)
+    if (controller.cron === '0 1 * * *') {
+      console.log('[Cron] Starting MOTD sync from Discord...');
+      const result = await syncMotdFromDiscord(env);
+      if (result) {
+        const updatedAt = new Date().toISOString();
+        await env.DB.prepare(`
+          INSERT INTO motd (id, message, updated_at, updated_by)
+          VALUES ('main', ?, ?, 'discord-bot')
+          ON CONFLICT(id) DO UPDATE SET
+            message = excluded.message,
+            updated_at = excluded.updated_at,
+            updated_by = excluded.updated_by
+        `).bind(result.levelId, updatedAt).run();
+        console.log(`[Cron] MOTD synced to level ID ${result.levelId}`);
+      } else {
+        console.error('[Cron] MOTD sync failed');
+      }
+      return;
+    }
+
     const response = await fetch(`https://api.aredl.net/v2/api/aredl/levels`);
     if (!response.ok) {
       console.error('AREDL sync failed: Failed to fetch AREDL data');
