@@ -17,6 +17,8 @@ type Bindings = {
   GOOGLE_SHEETS_API_KEY?: string;
   GOOGLE_SHEET_ID?: string;
   GOOGLE_SHEET_RANGE?: string;
+  DISCORD_BOT_TOKEN?: string;
+  DISCORD_CHANNEL_ID?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -1864,6 +1866,53 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
 });
 
 // === MOTD ROUTES ===
+
+// Auto-sync MOTD from Discord announcement channel
+async function syncMotdFromDiscord(env: Bindings): Promise<{ levelId: string; message: string } | null> {
+  const botToken = env.DISCORD_BOT_TOKEN;
+  const channelId = env.DISCORD_CHANNEL_ID;
+  if (!botToken || !channelId) return null;
+
+  const response = await fetch(
+    `https://discord.com/api/v10/channels/${channelId}/messages?limit=1`,
+    { headers: { Authorization: `Bot ${botToken}` } }
+  );
+  if (!response.ok) return null;
+
+  const messages = await response.json() as any[];
+  if (!messages?.length) return null;
+
+  const content = messages[0].content;
+  const match = content.match(/ID:\s*(\d+)/);
+  if (!match) return null;
+
+  const levelId = match[1];
+  return { levelId, message: content };
+}
+
+app.post('/api/motd/sync-from-discord', authenticateToken, async (c: any) => {
+  try {
+    const result = await syncMotdFromDiscord(c.env);
+    if (!result) {
+      return c.json({ error: 'Discord sync failed — check bot token and channel ID' }, 500);
+    }
+
+    const updatedAt = new Date().toISOString();
+    await c.env.DB.prepare(`
+      INSERT INTO motd (id, message, updated_at, updated_by)
+      VALUES ('main', ?, ?, 'discord-bot')
+      ON CONFLICT(id) DO UPDATE SET
+        message = excluded.message,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `).bind(result.levelId, updatedAt).run();
+
+    return c.json({ success: true, levelId: result.levelId });
+  } catch (error) {
+    console.error('Error syncing MOTD from Discord:', error);
+    return c.json({ error: 'Failed to sync MOTD from Discord' }, 500);
+  }
+});
 
 app.get('/api/motd', async (c) => {
   try {
