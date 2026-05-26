@@ -1905,7 +1905,7 @@ app.post('/api/motd/sync-from-discord', authenticateToken, async (c: any) => {
         message = excluded.message,
         updated_at = excluded.updated_at,
         updated_by = excluded.updated_by
-    `).bind(result.levelId, updatedAt).run();
+    `).bind(result.message, updatedAt).run();
 
     return c.json({ success: true, levelId: result.levelId });
   } catch (error) {
