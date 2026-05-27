@@ -44,6 +44,6 @@ zone_name = "hkgdl.dpdns.org"
 port = 8787
 local_protocol = "http"
 
-# === Cron Trigger - Daily AREDL Sync at 12:00 PM GMT+8 (04:00 UTC) ===
+# === Cron Trigger - Daily AREDL Sync at 12:00 PM GMT+8 (04:00 UTC), MOTD Sync at 2:00 AM GMT+8 (18:00 UTC) ===
 [triggers]
-crons = ["0 4 * * *", "0 1 * * *"]
+crons = ["0 4 * * *", "0 18 * * *"]
