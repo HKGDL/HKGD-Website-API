@@ -40,6 +40,21 @@ pattern = "hkgdl.dpdns.org/api"
 zone_name = "hkgdl.dpdns.org"
 
 # === Local Development ===
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+
 [dev]
 port = 8787
 local_protocol = "http"
