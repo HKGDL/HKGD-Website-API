@@ -37,9 +37,12 @@ app.use('*', cors({
       'https://hkgd-website-frontend.hkgdl.workers.dev',
       'https://hkgdl-frontend-v2.pages.dev',
       'https://v2.hkgdl.dpdns.org',
+      'https://hkgd-v2.hkgdl.workers.dev',
     ];
-    if (!origin || allowed.some(a => origin.startsWith(a) || origin === a)) return origin;
-    // Allow geode:// protocol
+    if (!origin) return origin;
+    if (allowed.some(a => origin === a || origin.startsWith(a))) return origin;
+    if (origin.endsWith('.hkgdl.workers.dev')) return origin;
+    if (origin.endsWith('.hkgdl.dpdns.org')) return origin;
     if (origin.startsWith('geode://')) return origin;
     return null;
   },
