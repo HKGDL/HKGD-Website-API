@@ -36,6 +36,7 @@ app.use('*', cors({
       'https://hkgdl.dpdns.org',
       'https://hkgd-website-frontend.hkgdl.workers.dev',
       'https://hkgdl-frontend-v2.pages.dev',
+      'https://v2.hkgdl.dpdns.org',
     ];
     if (!origin || allowed.some(a => origin.startsWith(a) || origin === a)) return origin;
     // Allow geode:// protocol
@@ -1867,14 +1868,23 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
 
 // === MOTD ROUTES ===
 
+// Map type prefixes used in Discord announcement messages
+const MAP_TYPE_PATTERNS: Record<string, RegExp> = {
+  daily: /MOTD Map \d+/,
+  weekly: /MOTW Map \d+/,
+  monthly: /MOTM Map \d+/,
+  platformer: /PLATFORMER MOTD Map \d+/,
+  curve: /CURVE MAP #?\d+/,
+};
+
 // Auto-sync MOTD from Discord announcement channel
-async function syncMotdFromDiscord(env: Bindings): Promise<{ levelId: string; message: string } | null> {
+async function syncMotdFromDiscord(env: Bindings): Promise<Record<string, { levelId: string; message: string }> | null> {
   const botToken = env.DISCORD_BOT_TOKEN;
   const channelId = env.DISCORD_CHANNEL_ID;
   if (!botToken || !channelId) return null;
 
   const response = await fetch(
-    `https://discord.com/api/v10/channels/${channelId}/messages?limit=1`,
+    `https://discord.com/api/v10/channels/${channelId}/messages?limit=50`,
     { headers: { Authorization: `Bot ${botToken}` } }
   );
   if (!response.ok) return null;
@@ -1882,32 +1892,50 @@ async function syncMotdFromDiscord(env: Bindings): Promise<{ levelId: string; me
   const messages = await response.json() as any[];
   if (!messages?.length) return null;
 
-  const content = messages[0].content;
-  const match = content.match(/ID:\s*(\d+)/);
-  if (!match) return null;
+  const found: Record<string, { levelId: string; message: string }> = {};
 
-  const levelId = match[1];
-  return { levelId, message: content };
+  for (const msg of messages) {
+    const content = msg.content;
+    if (!content) continue;
+
+    const idMatch = content.match(/ID:\s*(\d+)/);
+    if (!idMatch) continue;
+
+    // Determine map type from first line
+    for (const [type, pattern] of Object.entries(MAP_TYPE_PATTERNS)) {
+      if (pattern.test(content) && !found[type]) {
+        found[type] = { levelId: idMatch[1], message: content };
+        break;
+      }
+    }
+  }
+
+  return Object.keys(found).length > 0 ? found : null;
 }
 
 app.post('/api/motd/sync-from-discord', authenticateToken, async (c: any) => {
   try {
-    const result = await syncMotdFromDiscord(c.env);
-    if (!result) {
-      return c.json({ error: 'Discord sync failed — check bot token and channel ID' }, 500);
+    const results = await syncMotdFromDiscord(c.env);
+    if (!results) {
+      return c.json({ error: 'Discord sync failed — no matching map messages found' }, 500);
     }
 
     const updatedAt = new Date().toISOString();
-    await c.env.DB.prepare(`
-      INSERT INTO motd (id, message, updated_at, updated_by)
-      VALUES ('main', ?, ?, 'discord-bot')
-      ON CONFLICT(id) DO UPDATE SET
-        message = excluded.message,
-        updated_at = excluded.updated_at,
-        updated_by = excluded.updated_by
-    `).bind(result.message, updatedAt).run();
+    const stored: Record<string, string> = {};
 
-    return c.json({ success: true, levelId: result.levelId });
+    for (const [type, data] of Object.entries(results)) {
+      await c.env.DB.prepare(`
+        INSERT INTO motd (id, message, updated_at, updated_by)
+        VALUES (?, ?, ?, 'discord-bot')
+        ON CONFLICT(id) DO UPDATE SET
+          message = excluded.message,
+          updated_at = excluded.updated_at,
+          updated_by = excluded.updated_by
+      `).bind(type, data.message, updatedAt).run();
+      stored[type] = data.levelId;
+    }
+
+    return c.json({ success: true, types: stored });
   } catch (error) {
     console.error('Error syncing MOTD from Discord:', error);
     return c.json({ error: 'Failed to sync MOTD from Discord' }, 500);
@@ -1916,8 +1944,18 @@ app.post('/api/motd/sync-from-discord', authenticateToken, async (c: any) => {
 
 app.get('/api/motd', async (c) => {
   try {
-    const motd = await c.env.DB.prepare("SELECT message FROM motd WHERE id = 'main'").first();
-    return c.json({ message: motd?.message || '' });
+    const type = c.req.query('type') || null;
+    if (type) {
+      const row = await c.env.DB.prepare("SELECT message FROM motd WHERE id = ?").bind(type).first();
+      return c.json({ message: row?.message || '', type });
+    }
+    // Return all types
+    const rows = await c.env.DB.prepare("SELECT id, message FROM motd WHERE id != 'main' ORDER BY id").all();
+    const messages: Record<string, string> = {};
+    for (const row of rows.results) {
+      messages[(row as any).id] = (row as any).message;
+    }
+    return c.json({ messages, types: Object.keys(messages) });
   } catch (error) {
     console.error('Error fetching MOTD:', error);
     return c.json({ message: '' });
@@ -1926,21 +1964,22 @@ app.get('/api/motd', async (c) => {
 
 app.put('/api/motd', authenticateToken, async (c: any) => {
   try {
-    const { message } = await c.req.json();
+    const { message, type } = await c.req.json();
+    const mapType = type || 'main';
     const updatedAt = new Date().toISOString();
     const user = c.get('user') as any;
     const updatedBy = user?.isAdmin === true ? 'admin' : 'suggestions';
 
     await c.env.DB.prepare(`
       INSERT INTO motd (id, message, updated_at, updated_by)
-      VALUES ('main', ?, ?, ?)
+      VALUES (?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         message = excluded.message,
         updated_at = excluded.updated_at,
         updated_by = excluded.updated_by
-    `).bind(message, updatedAt, updatedBy).run();
+    `).bind(mapType, message, updatedAt, updatedBy).run();
 
-    return c.json({ message, updatedAt, updatedBy });
+    return c.json({ message, updatedAt, updatedBy, type: mapType });
   } catch (error) {
     console.error('Error updating MOTD:', error);
     return c.json({ error: 'Failed to update MOTD' }, 500);
@@ -1957,18 +1996,20 @@ export default {
     // MOTD sync from Discord at 18:00 UTC (02:00 GMT+8)
     if (controller.cron === '0 18 * * *') {
       console.log('[Cron] Starting MOTD sync from Discord...');
-      const result = await syncMotdFromDiscord(env);
-      if (result) {
+      const results = await syncMotdFromDiscord(env);
+      if (results) {
         const updatedAt = new Date().toISOString();
-        await env.DB.prepare(`
-          INSERT INTO motd (id, message, updated_at, updated_by)
-          VALUES ('main', ?, ?, 'discord-bot')
-          ON CONFLICT(id) DO UPDATE SET
-            message = excluded.message,
-            updated_at = excluded.updated_at,
-            updated_by = excluded.updated_by
-        `).bind(result.message, updatedAt).run();
-        console.log(`[Cron] MOTD synced to level ID ${result.levelId}`);
+        for (const [type, data] of Object.entries(results)) {
+          await env.DB.prepare(`
+            INSERT INTO motd (id, message, updated_at, updated_by)
+            VALUES (?, ?, ?, 'discord-bot')
+            ON CONFLICT(id) DO UPDATE SET
+              message = excluded.message,
+              updated_at = excluded.updated_at,
+              updated_by = excluded.updated_by
+          `).bind(type, data.message, updatedAt).run();
+          console.log(`[Cron] MOTD ${type} synced to level ID ${data.levelId}`);
+        }
       } else {
         console.error('[Cron] MOTD sync failed');
       }
