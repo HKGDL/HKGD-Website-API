@@ -23,9 +23,26 @@ type Bindings = {
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
+let tablesInitialized = false;
+
+async function ensureTables(db: D1Database) {
+  if (tablesInitialized) return;
+  await initUserTables(db);
+  tablesInitialized = true;
+}
 
 app.use('*', logger());
 app.use('*', secureHeaders());
+
+// Initialize user tables lazily on first request to user/admin endpoints
+app.use('/api/user/*', async (c, next) => {
+  await ensureTables(c.env.DB);
+  await next();
+});
+app.use('/api/admin/*', async (c, next) => {
+  await ensureTables(c.env.DB);
+  await next();
+});
 
 app.use('*', cors({
   origin: (origin) => {
@@ -329,6 +346,7 @@ app.post('/api/auth/logout', async (c) => {
 
 app.post('/api/user/register', async (c) => {
   try {
+    await ensureTables(c.env.DB);
     const { username, password, email } = await c.req.json();
     if (!username || !password || !email) {
       return c.json({ error: 'Username, password, and email are required' }, 400);
