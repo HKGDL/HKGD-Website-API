@@ -421,6 +421,25 @@ app.get('/api/user/profile', authenticateUser, async (c: any) => {
   }
 });
 
+// Alias: /api/user/me → same as /api/user/profile
+app.get('/api/user/me', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    const user = await c.env.DB.prepare(
+      'SELECT id, username, display_name, player_name, discord, email, created_at, updated_at FROM users WHERE id = ?'
+    ).bind(userId).first();
+    if (!user) return c.json({ error: 'User not found' }, 404);
+    return c.json({
+      id: user.id, username: user.username, displayName: user.display_name,
+      playerName: user.player_name, discord: user.discord, email: user.email,
+      createdAt: user.created_at, updatedAt: user.updated_at,
+    });
+  } catch (error) {
+    console.error('Profile error:', error);
+    return c.json({ error: 'Failed to fetch profile' }, 500);
+  }
+});
+
 app.put('/api/user/profile', authenticateUser, async (c: any) => {
   try {
     const { userId } = c.get('user');
@@ -552,6 +571,50 @@ app.put('/api/user/notifications/:id/read', authenticateUser, async (c: any) => 
 });
 
 app.post('/api/user/notifications/read-all', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    await c.env.DB.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?')
+      .bind(userId).run();
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Read all error:', error);
+    return c.json({ error: 'Failed to mark all as read' }, 500);
+  }
+});
+
+// ── Notification Aliases (frontend compat) ──────────
+
+app.get('/api/notifications', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    const notifs = await c.env.DB.prepare(`
+      SELECT id, type, title, message, read, created_at
+      FROM notifications WHERE user_id = ? ORDER BY created_at DESC
+    `).bind(userId).all();
+    const notifications = (notifs.results || []).map((n: any) => ({
+      id: n.id, type: n.type, title: n.title, message: n.message,
+      read: n.read === 1, createdAt: n.created_at,
+    }));
+    return c.json({ notifications, unreadCount: notifications.filter((n: any) => !n.read).length });
+  } catch (error) {
+    console.error('Notifications error:', error);
+    return c.json({ error: 'Failed to fetch notifications' }, 500);
+  }
+});
+
+app.put('/api/notifications/:id/read', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    await c.env.DB.prepare('UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?')
+      .bind(c.req.param('id'), userId).run();
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Mark read error:', error);
+    return c.json({ error: 'Failed to mark notification as read' }, 500);
+  }
+});
+
+app.post('/api/notifications/read-all', authenticateUser, async (c: any) => {
   try {
     const { userId } = c.get('user');
     await c.env.DB.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?')
