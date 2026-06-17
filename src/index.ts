@@ -766,11 +766,11 @@ app.get('/api/admin/users', authenticateToken, async (c: any) => {
     return c.json((users.results || []).map((u: any) => ({
       id: u.id,
       username: u.username,
-      displayName: u.display_name,
-      playerName: u.player_name,
-      discord: u.discord,
+      display_name: u.display_name,
+      player_name: u.player_name,
+      discord_username: u.discord,
       email: u.email,
-      createdAt: u.created_at,
+      created_at: u.created_at,
     })));
   } catch (error) {
     console.error('Admin users error:', error);
