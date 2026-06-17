@@ -179,54 +179,14 @@ function computePoints(rank: number, totalLevels: number): number {
 // ── DB Init ──────────────────────────────────────────
 
 async function initUserTables(db: D1Database): Promise<void> {
-  try {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        display_name TEXT,
-        player_name TEXT,
-        discord TEXT,
-        email TEXT UNIQUE NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS notifications (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        read INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-      CREATE TABLE IF NOT EXISTS claims (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        level_id TEXT NOT NULL,
-        level_name TEXT NOT NULL,
-        record_date TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-      CREATE TABLE IF NOT EXISTS reset_tokens (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        token TEXT UNIQUE NOT NULL,
-        expires_at INTEGER NOT NULL,
-        used INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-    `);
-    try { await db.exec("ALTER TABLE records ADD COLUMN points REAL"); } catch {}
-    try { await db.exec("ALTER TABLE platformer_records ADD COLUMN points REAL"); } catch {}
-  } catch (err) {
-    console.error('Error initializing tables:', err);
-  }
+  await db.exec("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, display_name TEXT, player_name TEXT, discord TEXT, email TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+  await db.exec("CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, read INTEGER DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)");
+  await db.exec("CREATE TABLE IF NOT EXISTS claims (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, level_id TEXT NOT NULL, level_name TEXT NOT NULL, record_date TEXT, status TEXT DEFAULT 'pending', created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)");
+  await db.exec("CREATE TABLE IF NOT EXISTS reset_tokens (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token TEXT UNIQUE NOT NULL, expires_at INTEGER NOT NULL, used INTEGER DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)");
+  // Migrate old schema: add password column if missing (old table used password_hash)
+  try { await db.exec("ALTER TABLE users ADD COLUMN password TEXT"); } catch {}
+  try { await db.exec("ALTER TABLE records ADD COLUMN points REAL"); } catch {}
+  try { await db.exec("ALTER TABLE platformer_records ADD COLUMN points REAL"); } catch {}
 }
 
 // ── Email (Resend) ───────────────────────────────────
@@ -384,7 +344,7 @@ app.post('/api/user/register', async (c) => {
     return c.json({ success: true, token, user: { id, username, email } }, 201);
   } catch (error) {
     console.error('Register error:', error);
-    return c.json({ error: 'Registration failed', detail: String(error) }, 500);
+    return c.json({ error: 'Registration failed' }, 500);
   }
 });
 
