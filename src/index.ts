@@ -384,7 +384,7 @@ app.post('/api/user/register', async (c) => {
     return c.json({ success: true, token, user: { id, username, email } }, 201);
   } catch (error) {
     console.error('Register error:', error);
-    return c.json({ error: 'Registration failed' }, 500);
+    return c.json({ error: 'Registration failed', detail: String(error) }, 500);
   }
 });
 
