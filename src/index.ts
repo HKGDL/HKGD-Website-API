@@ -203,13 +203,18 @@ async function sendEmail(apiKey: string, to: string, subject: string, html: stri
 }
 
 async function sendPasswordResetEmail(apiKey: string, to: string, resetUrl: string): Promise<boolean> {
-  const subject = 'Reset Your HKGD Account Password';
-  const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
-    <h2 style="color:#e74c3c">HKGD Demon List</h2>
-    <p>You requested a password reset. Click the button below — this link expires in 5 minutes.</p>
-    <a href="${resetUrl}" style="display:inline-block;padding:12px 24px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:6px;margin:16px 0">Reset Password</a>
-    <p style="color:#888;font-size:13px">If you didn't request this, ignore this email.</p></div>`;
-  const text = `Reset your HKGD password: ${resetUrl}\n\nThis link expires in 5 minutes.`;
+  const subject = 'Password Reset Request - HKGD Demon List';
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:0 auto;padding:20px">
+      <h2 style="color:#333;margin:0 0 16px">HKGD Demon List</h2>
+      <p style="color:#555;font-size:15px;line-height:1.5">We received a request to reset the password for your account. If you made this request, click the link below to set a new password.</p>
+      <p style="margin:20px 0;text-align:center">
+        <a href="${resetUrl}" style="display:inline-block;padding:11px 28px;background:#0066ff;color:#fff;text-decoration:none;border-radius:5px;font-size:14px">Reset my password</a>
+      </p>
+      <p style="color:#999;font-size:13px">This link expires in 5 minutes. If you didn't request a password reset, you can safely ignore this email.</p>
+      <p style="color:#bbb;font-size:12px;border-top:1px solid #eee;padding-top:12px;margin-top:20px">HKGD Demon List &middot; hkgdl.dpdns.org</p>
+    </div>`;
+  const text = `We received a request to reset the password for your HKGD account.\n\nTo reset your password, visit:\n${resetUrl}\n\nThis link expires in 5 minutes. If you didn't request this, ignore this email.`;
   return sendEmail(apiKey, to, subject, html, text);
 }
 
@@ -775,6 +780,31 @@ app.get('/api/admin/users', authenticateToken, async (c: any) => {
   } catch (error) {
     console.error('Admin users error:', error);
     return c.json({ error: 'Failed to fetch users' }, 500);
+  }
+});
+
+app.post('/api/admin/users', authenticateToken, async (c: any) => {
+  try {
+    const { username, password, email, displayName, playerName } = await c.req.json();
+    if (!username || !password || !email) return c.json({ error: 'Username, password, and email required' }, 400);
+    const existing = await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
+    if (existing) return c.json({ error: 'Username already taken' }, 409);
+    const emailExists = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+    if (emailExists) return c.json({ error: 'Email already registered' }, 409);
+    const id = `user-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(password));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashedPassword = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    await c.env.DB.prepare(`
+      INSERT INTO users (id, username, password, display_name, player_name, email, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, username, hashedPassword, safe(displayName), safe(playerName), email, now, now).run();
+    return c.json({ success: true, id, username }, 201);
+  } catch (error) {
+    console.error('Admin create user error:', error);
+    return c.json({ error: 'Failed to create user' }, 500);
   }
 });
 
