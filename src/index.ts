@@ -3,7 +3,6 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 import { SignJWT, jwtVerify } from 'jose';
-import { validator } from 'hono/validator';
 
 type Bindings = {
   DB: D1Database;
@@ -19,15 +18,15 @@ type Bindings = {
   GOOGLE_SHEET_RANGE?: string;
   DISCORD_BOT_TOKEN?: string;
   DISCORD_CHANNEL_ID?: string;
+  RESEND_API_KEY?: string;
+  SITE_URL?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Middleware
 app.use('*', logger());
 app.use('*', secureHeaders());
 
-// CORS configuration
 app.use('*', cors({
   origin: (origin) => {
     const allowed = [
@@ -36,9 +35,9 @@ app.use('*', cors({
       'https://hkgdl.dpdns.org',
       'https://hkgd-website-frontend.hkgdl.workers.dev',
       'https://hkgdl-frontend-v2.pages.dev',
+      'https://v2.hkgdl.dpdns.org',
     ];
     if (!origin || allowed.some(a => origin.startsWith(a) || origin === a)) return origin;
-    // Allow geode:// protocol
     if (origin.startsWith('geode://')) return origin;
     return null;
   },
@@ -47,7 +46,6 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
 
-// Root route - API info
 app.get('/api', (c) => {
   return c.json({
     name: 'HKGD API',
@@ -62,46 +60,38 @@ app.get('/api', (c) => {
   });
 });
 
-// Helper functions
+// ── Helpers ──────────────────────────────────────────
+
 function getClientIP(c: any): string {
   let ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
            c.req.header('x-real-ip')?.trim() ||
            '127.0.0.1';
-  
-  if (ip === '::1' || ip === '::ffff:127.0.0.1') {
-    ip = '127.0.0.1';
-  }
-  if (ip.startsWith('::ffff:')) {
-    ip = ip.substring(7);
-  }
+  if (ip === '::1' || ip === '::ffff:127.0.0.1') ip = '127.0.0.1';
+  if (ip.startsWith('::ffff:')) ip = ip.substring(7);
   return ip || '127.0.0.1';
 }
 
-// IP Ban Management (using D1 for persistence)
+const safe = (v: any) => (v === undefined ? null : v);
+
+// ── IP Ban ───────────────────────────────────────────
+
 const MAX_LOGIN_ATTEMPTS = 5;
-const BAN_DURATION = 15 * 60 * 1000; // 15 minutes
+const BAN_DURATION = 15 * 60 * 1000;
 
 async function isIPBanned(db: D1Database, ip: string): Promise<{ banned: boolean; remainingTime?: number }> {
   const result = await db.prepare(
     'SELECT banned_until FROM ip_bans WHERE ip = ? AND banned_until > ?'
   ).bind(ip, Date.now()).first();
-  
   if (result) {
-    const remainingTime = Math.ceil((result.banned_until as number - Date.now()) / 1000);
-    return { banned: true, remainingTime };
+    return { banned: true, remainingTime: Math.ceil((result.banned_until as number - Date.now()) / 1000) };
   }
   return { banned: false };
 }
 
 async function recordFailedLogin(db: D1Database, ip: string): Promise<number> {
-  // Get current attempts
-  const existing = await db.prepare(
-    'SELECT attempts FROM ip_bans WHERE ip = ?'
-  ).bind(ip).first();
-  
+  const existing = await db.prepare('SELECT attempts FROM ip_bans WHERE ip = ?').bind(ip).first();
   const attempts = (existing?.attempts as number || 0) + 1;
   const bannedUntil = attempts >= MAX_LOGIN_ATTEMPTS ? Date.now() + BAN_DURATION : 0;
-  
   await db.prepare(`
     INSERT INTO ip_bans (ip, attempts, banned_until, updated_at)
     VALUES (?, ?, ?, ?)
@@ -110,7 +100,6 @@ async function recordFailedLogin(db: D1Database, ip: string): Promise<number> {
       banned_until = excluded.banned_until,
       updated_at = excluded.updated_at
   `).bind(ip, attempts, bannedUntil, Date.now()).run();
-  
   return attempts;
 }
 
@@ -118,94 +107,171 @@ async function resetFailedAttempts(db: D1Database, ip: string): Promise<void> {
   await db.prepare('DELETE FROM ip_bans WHERE ip = ?').bind(ip).run();
 }
 
-const INDEXNOW_SEARCH_ENGINES = [
-  'https://www.bing.com/indexnow',
-];
+// ── IndexNow ─────────────────────────────────────────
+
+const INDEXNOW_SEARCH_ENGINES = ['https://www.bing.com/indexnow'];
 
 async function submitUrlToIndexNow(env: Bindings, url: string): Promise<void> {
   const key = env.INDEXNOW_KEY;
-  if (!key) {
-    console.log('[IndexNow] No key configured, skipping');
-    return;
-  }
-
+  if (!key) return;
   const hostname = env.SITE_HOSTNAME || 'hkgdl.dpdns.org';
   const siteUrl = url.startsWith('http') ? url : `https://${hostname}${url}`;
-
-  console.log(`[IndexNow] Submitting: ${siteUrl}`);
-
   for (const engine of INDEXNOW_SEARCH_ENGINES) {
     try {
-      const submitUrl = `${engine}?url=${encodeURIComponent(siteUrl)}&key=${key}`;
-      const response = await fetch(submitUrl, { method: 'GET' });
-      console.log(`[IndexNow] ${engine} responded with ${response.status}`);
-    } catch (err) {
-      console.error(`[IndexNow] Failed to submit to ${engine}:`, err);
-    }
+      await fetch(`${engine}?url=${encodeURIComponent(siteUrl)}&key=${key}`, { method: 'GET' });
+    } catch {}
   }
 }
 
 async function submitUrlsBatchToIndexNow(env: Bindings, urls: string[]): Promise<void> {
   const key = env.INDEXNOW_KEY;
-  if (!key || urls.length === 0) {
-    return;
-  }
-
+  if (!key || urls.length === 0) return;
   const hostname = env.SITE_HOSTNAME || 'hkgdl.dpdns.org';
   const siteUrls = urls.map(u => u.startsWith('http') ? u : `https://${hostname}${u}`);
-
-  console.log(`[IndexNow] Batch submitting ${siteUrls.length} URLs`);
-
-  const payload = {
-    host: hostname,
-    key: key,
-    urlList: siteUrls
-  };
-
+  const payload = { host: hostname, key, urlList: siteUrls };
   for (const engine of INDEXNOW_SEARCH_ENGINES) {
     try {
-      const response = await fetch(engine, {
+      await fetch(engine, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
-      console.log(`[IndexNow] Batch to ${engine} responded with ${response.status}`);
-    } catch (err) {
-      console.error(`[IndexNow] Batch failed for ${engine}:`, err);
-    }
+    } catch {}
   }
 }
 
 function notifyContentChanged(env: Bindings, extraUrls?: string[]) {
   const urls: string[] = ['/'];
-  if (extraUrls) {
-    urls.push(...extraUrls);
-  }
-  submitUrlsBatchToIndexNow(env, urls).catch(err => {
-    console.error('[IndexNow] Background submission error:', err);
-  });
+  if (extraUrls) urls.push(...extraUrls);
+  submitUrlsBatchToIndexNow(env, urls).catch(() => {});
 }
 
-// JWT Authentication Middleware
-async function authenticateToken(c: any, next: any) {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '') || 
-                c.req.header('Cookie')?.match(/hkgd_admin_token=([^;]+)/)?.[1];
-  
-  if (!token) {
-    return c.json({ error: 'Access token required' }, 401);
-  }
-  
+// ── Points ───────────────────────────────────────────
+
+function computePoints(rank: number, totalLevels: number): number {
+  if (!totalLevels || totalLevels <= 0) return 1;
+  if (rank <= 0) rank = 1;
+  if (rank > totalLevels) rank = totalLevels;
+  return Math.max(1, Math.round(500 * (1 - Math.log10(rank) / Math.log10(totalLevels))));
+}
+
+// ── DB Init ──────────────────────────────────────────
+
+async function initUserTables(db: D1Database): Promise<void> {
   try {
-    const secret = new TextEncoder().encode(c.env.JWT_SECRET || 'hkgd-secret-key-2024');
-    const { payload } = await jwtVerify(token, secret);
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        display_name TEXT,
+        player_name TEXT,
+        discord TEXT,
+        email TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        read INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS claims (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        level_id TEXT NOT NULL,
+        level_name TEXT NOT NULL,
+        record_date TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS reset_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+    `);
+    try { await db.exec("ALTER TABLE records ADD COLUMN points REAL"); } catch {}
+    try { await db.exec("ALTER TABLE platformer_records ADD COLUMN points REAL"); } catch {}
+  } catch (err) {
+    console.error('Error initializing tables:', err);
+  }
+}
+
+// ── Email (Resend) ───────────────────────────────────
+
+async function sendEmail(apiKey: string, to: string, subject: string, html: string, text: string): Promise<boolean> {
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: 'HKGD Demon List <noreply@hkgdl.dpdns.org>', to: [to], subject, html, text }),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+async function sendPasswordResetEmail(apiKey: string, to: string, resetUrl: string): Promise<boolean> {
+  const subject = 'Reset Your HKGD Account Password';
+  const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
+    <h2 style="color:#e74c3c">HKGD Demon List</h2>
+    <p>You requested a password reset. Click the button below — this link expires in 5 minutes.</p>
+    <a href="${resetUrl}" style="display:inline-block;padding:12px 24px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:6px;margin:16px 0">Reset Password</a>
+    <p style="color:#888;font-size:13px">If you didn't request this, ignore this email.</p></div>`;
+  const text = `Reset your HKGD password: ${resetUrl}\n\nThis link expires in 5 minutes.`;
+  return sendEmail(apiKey, to, subject, html, text);
+}
+
+// ── JWT Helpers ──────────────────────────────────────
+
+const USER_JWT_EXPIRY = '7d';
+
+async function createUserJwt(user: any, jwtSecret: string): Promise<string> {
+  return await new SignJWT({ userId: user.id, username: user.username, isAdmin: false, timestamp: Date.now() })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime(USER_JWT_EXPIRY)
+    .sign(new TextEncoder().encode(jwtSecret));
+}
+
+// Admin auth middleware
+async function authenticateToken(c: any, next: any) {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '') ||
+                c.req.header('Cookie')?.match(/hkgd_admin_token=([^;]+)/)?.[1];
+  if (!token) return c.json({ error: 'Access token required' }, 401);
+  try {
+    const { payload } = await jwtVerify(token, new TextEncoder().encode(c.env.JWT_SECRET || 'hkgd-secret-key-2024'));
     c.set('user', payload);
     await next();
-  } catch (err) {
+  } catch {
     return c.json({ error: 'Invalid or expired token' }, 403);
   }
 }
 
-// === AUTH ROUTES ===
+// User auth middleware
+async function authenticateUser(c: any, next: any) {
+  const auth = c.req.header('Authorization');
+  if (!auth || !auth.startsWith('Bearer ')) return c.json({ error: 'Access token required' }, 401);
+  try {
+    const { payload } = await jwtVerify(auth.slice(7), new TextEncoder().encode(c.env.JWT_SECRET || 'hkgd-secret-key-2024'));
+    if (payload.isAdmin) return c.json({ error: 'Admin tokens not allowed on user endpoints' }, 403);
+    c.set('user', payload);
+    await next();
+  } catch {
+    return c.json({ error: 'Invalid or expired token' }, 403);
+  }
+}
+
+// ── Admin Auth ───────────────────────────────────────
 
 app.post('/api/auth/login', async (c) => {
   try {
@@ -214,82 +280,33 @@ app.post('/api/auth/login', async (c) => {
     const adminPassword = c.env.ADMIN_PASSWORD;
     const suggestionsPassword = c.env.SUGGESTIONS_PASSWORD;
     const jwtSecret = c.env.JWT_SECRET;
-    
     const motdPassword = c.env.MOTD_ADMIN_PASSWORD;
 
     if (!adminPassword || !suggestionsPassword || !jwtSecret) {
       return c.json({ error: 'Server configuration error' }, 500);
     }
-    
-    // Check if IP is banned
+
     const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
     if (banned) {
-      return c.json({
-        error: 'IP banned',
-        message: `Too many failed login attempts. Try again in ${Math.floor(remainingTime! / 60)} minutes.`,
-        remainingTime
-      }, 403);
+      return c.json({ error: 'IP banned', message: `Too many failed login attempts. Try again in ${Math.floor(remainingTime! / 60)} minutes.`, remainingTime }, 403);
     }
-    
-    // Check for full admin password
-    if (password === adminPassword) {
+
+    let role: any = null;
+    if (password === adminPassword) role = true;
+    else if (password === suggestionsPassword) role = 'suggestions';
+    else if (motdPassword && password === motdPassword) role = 'motd';
+
+    if (role !== null) {
       await resetFailedAttempts(c.env.DB, ip);
-      
-      const secret = new TextEncoder().encode(jwtSecret);
-      const token = await new SignJWT({ isAdmin: true, timestamp: Date.now() })
+      const token = await new SignJWT({ isAdmin: role, timestamp: Date.now() })
         .setProtectedHeader({ alg: 'HS256' })
         .setExpirationTime('2h')
-        .sign(secret);
-      
-      return c.json({
-        success: true,
-        user: { isAdmin: true },
-        token
-      });
+        .sign(new TextEncoder().encode(jwtSecret));
+      return c.json({ success: true, user: { isAdmin: role }, token });
     }
-    
-    // Check for suggestions-only password
-    if (password === suggestionsPassword) {
-      await resetFailedAttempts(c.env.DB, ip);
-      
-      const secret = new TextEncoder().encode(jwtSecret);
-      const token = await new SignJWT({ isAdmin: 'suggestions', timestamp: Date.now() })
-        .setProtectedHeader({ alg: 'HS256' })
-        .setExpirationTime('2h')
-        .sign(secret);
-      
-      return c.json({
-        success: true,
-        user: { isAdmin: 'suggestions' },
-        token
-      });
-    }
-    
-    // Check for MOTD-only password
-    if (motdPassword && password === motdPassword) {
-      await resetFailedAttempts(c.env.DB, ip);
-      
-      const secret = new TextEncoder().encode(jwtSecret);
-      const token = await new SignJWT({ isAdmin: 'motd', timestamp: Date.now() })
-        .setProtectedHeader({ alg: 'HS256' })
-        .setExpirationTime('2h')
-        .sign(secret);
-      
-      return c.json({
-        success: true,
-        user: { isAdmin: 'motd' },
-        token
-      });
-    }
-    
-    // Invalid password
+
     const attempts = await recordFailedLogin(c.env.DB, ip);
-    return c.json({
-      success: false,
-      error: 'Invalid password',
-      attemptsRemaining: Math.max(0, MAX_LOGIN_ATTEMPTS - attempts),
-      attempts
-    }, 401);
+    return c.json({ success: false, error: 'Invalid password', attemptsRemaining: Math.max(0, MAX_LOGIN_ATTEMPTS - attempts), attempts }, 401);
   } catch (error) {
     console.error('Login error:', error);
     return c.json({ error: 'Login failed' }, 500);
@@ -304,11 +321,440 @@ app.post('/api/auth/logout', async (c) => {
   return c.json({ success: true, message: 'Logged out successfully' });
 });
 
-// === LEVELS ROUTES ===
+// ── User Auth ────────────────────────────────────────
+
+app.post('/api/user/register', async (c) => {
+  try {
+    const { username, password, email } = await c.req.json();
+    if (!username || !password || !email) {
+      return c.json({ error: 'Username, password, and email are required' }, 400);
+    }
+    if (username.length < 3 || username.length > 20) {
+      return c.json({ error: 'Username must be 3-20 characters' }, 400);
+    }
+    if (password.length < 6) {
+      return c.json({ error: 'Password must be at least 6 characters' }, 400);
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return c.json({ error: 'Invalid email format' }, 400);
+    }
+
+    const existing = await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
+    if (existing) return c.json({ error: 'Username already taken' }, 409);
+
+    const emailExists = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+    if (emailExists) return c.json({ error: 'Email already registered' }, 409);
+
+    const id = `user-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(password));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashedPassword = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    await c.env.DB.prepare(`
+      INSERT INTO users (id, username, password, email, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(id, username, hashedPassword, email, now, now).run();
+
+    const token = await createUserJwt({ id, username }, c.env.JWT_SECRET);
+    return c.json({ success: true, token, user: { id, username, email } }, 201);
+  } catch (error) {
+    console.error('Register error:', error);
+    return c.json({ error: 'Registration failed' }, 500);
+  }
+});
+
+app.post('/api/user/login', async (c) => {
+  try {
+    const { username, password } = await c.req.json();
+    if (!username || !password) return c.json({ error: 'Username and password required' }, 400);
+
+    const ip = getClientIP(c);
+    const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
+    if (banned) {
+      return c.json({ error: 'IP banned', message: `Too many failed login attempts. Try again in ${Math.floor(remainingTime! / 60)} minutes.` }, 403);
+    }
+
+    const user = await c.env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
+    if (!user) {
+      await recordFailedLogin(c.env.DB, ip);
+      return c.json({ error: 'Invalid username or password' }, 401);
+    }
+
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(password));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashedPassword = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    if (user.password !== hashedPassword) {
+      await recordFailedLogin(c.env.DB, ip);
+      return c.json({ error: 'Invalid username or password' }, 401);
+    }
+
+    await resetFailedAttempts(c.env.DB, ip);
+    const token = await createUserJwt(user, c.env.JWT_SECRET);
+
+    return c.json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.display_name,
+        playerName: user.player_name,
+        discord: user.discord,
+        email: user.email,
+      }
+    });
+  } catch (error) {
+    console.error('User login error:', error);
+    return c.json({ error: 'Login failed' }, 500);
+  }
+});
+
+app.get('/api/user/profile', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    const user = await c.env.DB.prepare(
+      'SELECT id, username, display_name, player_name, discord, email, created_at, updated_at FROM users WHERE id = ?'
+    ).bind(userId).first();
+
+    if (!user) return c.json({ error: 'User not found' }, 404);
+
+    return c.json({
+      id: user.id,
+      username: user.username,
+      displayName: user.display_name,
+      playerName: user.player_name,
+      discord: user.discord,
+      email: user.email,
+      createdAt: user.created_at,
+      updatedAt: user.updated_at,
+    });
+  } catch (error) {
+    console.error('Profile error:', error);
+    return c.json({ error: 'Failed to fetch profile' }, 500);
+  }
+});
+
+app.put('/api/user/profile', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    const { displayName, playerName, discord, email } = await c.req.json();
+
+    if (email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) return c.json({ error: 'Invalid email format' }, 400);
+      const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ? AND id != ?').bind(email, userId).first();
+      if (existing) return c.json({ error: 'Email already in use' }, 409);
+    }
+
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(`
+      UPDATE users SET display_name = ?, player_name = ?, discord = ?, email = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(safe(displayName), safe(playerName), safe(discord), safe(email), now, userId).run();
+
+    return c.json({ success: true, message: 'Profile updated' });
+  } catch (error) {
+    console.error('Profile update error:', error);
+    return c.json({ error: 'Failed to update profile' }, 500);
+  }
+});
+
+// ── Forgot / Reset Password ─────────────────────────
+
+app.post('/api/user/forgot-password', async (c) => {
+  try {
+    const { email } = await c.req.json();
+    if (!email) return c.json({ error: 'Email required' }, 400);
+
+    const user = await c.env.DB.prepare('SELECT id, username FROM users WHERE email = ?').bind(email).first();
+    if (!user) {
+      return c.json({ success: true, message: 'If the email exists, a reset link has been sent.' });
+    }
+
+    const apiKey = c.env.RESEND_API_KEY;
+    if (!apiKey) return c.json({ error: 'Email service not configured' }, 500);
+
+    const token = crypto.randomUUID();
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+    const now = new Date().toISOString();
+    const tokenId = `rt-${crypto.randomUUID()}`;
+
+    await c.env.DB.prepare(`
+      INSERT INTO reset_tokens (id, user_id, token, expires_at, used, created_at)
+      VALUES (?, ?, ?, ?, 0, ?)
+    `).bind(tokenId, user.id, token, expiresAt, now).run();
+
+    const siteUrl = c.env.SITE_URL || 'https://v2.hkgdl.dpdns.org';
+    const resetUrl = `${siteUrl}/reset-password?token=${token}`;
+
+    await sendPasswordResetEmail(apiKey, email, resetUrl);
+
+    return c.json({ success: true, message: 'If the email exists, a reset link has been sent.' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    return c.json({ error: 'Failed to process request' }, 500);
+  }
+});
+
+app.post('/api/user/reset-password', async (c) => {
+  try {
+    const { token, newPassword } = await c.req.json();
+    if (!token || !newPassword) return c.json({ error: 'Token and new password required' }, 400);
+    if (newPassword.length < 6) return c.json({ error: 'Password must be at least 6 characters' }, 400);
+
+    const resetToken = await c.env.DB.prepare(
+      'SELECT * FROM reset_tokens WHERE token = ? AND used = 0 AND expires_at > ?'
+    ).bind(token, Date.now()).first();
+
+    if (!resetToken) return c.json({ error: 'Invalid or expired token' }, 400);
+
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(newPassword));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashedPassword = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    await c.env.DB.prepare('UPDATE users SET password = ? WHERE id = ?')
+      .bind(hashedPassword, resetToken.user_id).run();
+
+    await c.env.DB.prepare('UPDATE reset_tokens SET used = 1 WHERE id = ?')
+      .bind(resetToken.id).run();
+
+    return c.json({ success: true, message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    return c.json({ error: 'Failed to reset password' }, 500);
+  }
+});
+
+// ── Notifications ────────────────────────────────────
+
+app.get('/api/user/notifications', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    const notifications = await c.env.DB.prepare(`
+      SELECT id, type, title, message, read, created_at
+      FROM notifications
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `).bind(userId).all();
+
+    return c.json((notifications.results || []).map((n: any) => ({
+      id: n.id,
+      type: n.type,
+      title: n.title,
+      message: n.message,
+      read: n.read === 1,
+      createdAt: n.created_at,
+    })));
+  } catch (error) {
+    console.error('Notifications error:', error);
+    return c.json({ error: 'Failed to fetch notifications' }, 500);
+  }
+});
+
+app.put('/api/user/notifications/:id/read', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    await c.env.DB.prepare('UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?')
+      .bind(c.req.param('id'), userId).run();
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Mark read error:', error);
+    return c.json({ error: 'Failed to mark notification as read' }, 500);
+  }
+});
+
+app.post('/api/user/notifications/read-all', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    await c.env.DB.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?')
+      .bind(userId).run();
+    return c.json({ success: true });
+  } catch (error) {
+    console.error('Read all error:', error);
+    return c.json({ error: 'Failed to mark all as read' }, 500);
+  }
+});
+
+async function createNotification(db: D1Database, userId: string, type: string, title: string, message: string): Promise<void> {
+  const id = `notif-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  await db.prepare(`
+    INSERT INTO notifications (id, user_id, type, title, message, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(id, userId, type, title, message, now).run();
+}
+
+// ── Claims ───────────────────────────────────────────
+
+app.get('/api/user/claims', authenticateUser, async (c: any) => {
+  try {
+    const { userId } = c.get('user');
+    const claims = await c.env.DB.prepare(`
+      SELECT id, level_id, level_name, record_date, status, created_at
+      FROM claims
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `).bind(userId).all();
+
+    return c.json((claims.results || []).map((cl: any) => ({
+      id: cl.id,
+      levelId: cl.level_id,
+      levelName: cl.level_name,
+      recordDate: cl.record_date,
+      status: cl.status,
+      createdAt: cl.created_at,
+    })));
+  } catch (error) {
+    console.error('Claims error:', error);
+    return c.json({ error: 'Failed to fetch claims' }, 500);
+  }
+});
+
+app.post('/api/user/claims', authenticateUser, async (c: any) => {
+  try {
+    const { userId, username } = c.get('user');
+    const { levelId, levelName, recordDate } = await c.req.json();
+    if (!levelId || !levelName) return c.json({ error: 'levelId and levelName required' }, 400);
+
+    const id = `claim-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+
+    await c.env.DB.prepare(`
+      INSERT INTO claims (id, user_id, level_id, level_name, record_date, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?)
+    `).bind(id, userId, levelId, levelName, safe(recordDate), now).run();
+
+    const admins = await c.env.DB.prepare("SELECT id FROM users WHERE username LIKE 'HKGDAdmin%'").all();
+    for (const admin of (admins.results || [])) {
+      await createNotification(c.env.DB, (admin as any).id, 'claim',
+        `New claim from ${username}`,
+        `${username} claimed record on ${levelName}`
+      );
+    }
+
+    return c.json({ success: true, id, message: 'Claim submitted' }, 201);
+  } catch (error) {
+    console.error('Create claim error:', error);
+    return c.json({ error: 'Failed to submit claim' }, 500);
+  }
+});
+
+// ── Admin: Claims ────────────────────────────────────
+
+app.get('/api/admin/claims', authenticateToken, async (c: any) => {
+  try {
+    const { status } = c.req.query();
+    let query = `
+      SELECT c.id, c.level_id, c.level_name, c.record_date, c.status, c.created_at,
+             u.id as userId, u.username, u.display_name as displayName
+      FROM claims c
+      JOIN users u ON c.user_id = u.id
+    `;
+    const params: any[] = [];
+    if (status && ['pending', 'approved', 'rejected'].includes(status)) {
+      query += ' WHERE c.status = ?';
+      params.push(status);
+    }
+    query += ' ORDER BY c.created_at DESC';
+
+    const claims = await c.env.DB.prepare(query).bind(...params).all();
+    return c.json((claims.results || []).map((cl: any) => ({
+      id: cl.id,
+      levelId: cl.level_id,
+      levelName: cl.level_name,
+      recordDate: cl.record_date,
+      status: cl.status,
+      createdAt: cl.created_at,
+      user: { id: cl.userId, username: cl.username, displayName: cl.displayName },
+    })));
+  } catch (error) {
+    console.error('Admin claims error:', error);
+    return c.json({ error: 'Failed to fetch claims' }, 500);
+  }
+});
+
+app.put('/api/admin/claims/:id', authenticateToken, async (c: any) => {
+  try {
+    const { status } = await c.req.json();
+    if (!['approved', 'rejected'].includes(status)) {
+      return c.json({ error: 'Status must be approved or rejected' }, 400);
+    }
+
+    const claim = await c.env.DB.prepare('SELECT * FROM claims WHERE id = ?').bind(c.req.param('id')).first();
+    if (!claim) return c.json({ error: 'Claim not found' }, 404);
+
+    await c.env.DB.prepare('UPDATE claims SET status = ? WHERE id = ?').bind(status, claim.id).run();
+
+    await createNotification(c.env.DB, (claim as any).user_id, 'claim_status',
+      `Claim ${status}`,
+      `Your claim on ${(claim as any).level_name} has been ${status}.`
+    );
+
+    return c.json({ success: true, message: `Claim ${status}` });
+  } catch (error) {
+    console.error('Update claim error:', error);
+    return c.json({ error: 'Failed to update claim' }, 500);
+  }
+});
+
+// ── Admin: Users ─────────────────────────────────────
+
+app.get('/api/admin/users', authenticateToken, async (c: any) => {
+  try {
+    const { search } = c.req.query();
+    let query = 'SELECT id, username, display_name, player_name, discord, email, created_at FROM users';
+    const params: any[] = [];
+    if (search) {
+      query += ' WHERE username LIKE ? OR display_name LIKE ? OR player_name LIKE ? OR email LIKE ?';
+      const s = `%${search}%`;
+      params.push(s, s, s, s);
+    }
+    query += ' ORDER BY created_at DESC';
+
+    const users = await c.env.DB.prepare(query).bind(...params).all();
+    return c.json((users.results || []).map((u: any) => ({
+      id: u.id,
+      username: u.username,
+      displayName: u.display_name,
+      playerName: u.player_name,
+      discord: u.discord,
+      email: u.email,
+      createdAt: u.created_at,
+    })));
+  } catch (error) {
+    console.error('Admin users error:', error);
+    return c.json({ error: 'Failed to fetch users' }, 500);
+  }
+});
+
+app.delete('/api/admin/users/:id', authenticateToken, async (c: any) => {
+  try {
+    const userId = c.req.param('id');
+    const user = await c.env.DB.prepare('SELECT id, username FROM users WHERE id = ?').bind(userId).first();
+    if (!user) return c.json({ error: 'User not found' }, 404);
+
+    await c.env.DB.prepare('DELETE FROM notifications WHERE user_id = ?').bind(userId).run();
+    await c.env.DB.prepare('DELETE FROM claims WHERE user_id = ?').bind(userId).run();
+    await c.env.DB.prepare('DELETE FROM reset_tokens WHERE user_id = ?').bind(userId).run();
+    await c.env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+
+    return c.json({ success: true, message: `User ${(user as any).username} deleted` });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    return c.json({ error: 'Failed to delete user' }, 500);
+  }
+});
+
+// ── Levels ───────────────────────────────────────────
 
 app.get('/api/levels', async (c) => {
   try {
-    // Single query for all levels
     const levels = await c.env.DB.prepare(`
       SELECT
         id, hkgd_rank as hkgdRank, aredl_rank as aredlRank, pemonlist_rank as pemonlistRank,
@@ -318,15 +764,13 @@ app.get('/api/levels', async (c) => {
       FROM levels
       ORDER BY hkgd_rank ASC
     `).all();
-    
-    // Single query for ALL records (instead of N+1 queries)
+
     const allRecords = await c.env.DB.prepare(`
-      SELECT id, level_id, player, date, video_url as videoUrl, fps, cbf, attempts
+      SELECT id, level_id, player, date, video_url as videoUrl, fps, cbf, attempts, points
       FROM records
       ORDER BY date DESC
     `).all();
-    
-    // Group records by level_id in memory
+
     const recordsByLevel: Record<string, any[]> = {};
     for (const r of (allRecords.results || [])) {
       if (!recordsByLevel[r.level_id as string]) {
@@ -334,15 +778,14 @@ app.get('/api/levels', async (c) => {
       }
       recordsByLevel[r.level_id as string].push({ ...r, cbf: r.cbf === 1 });
     }
-    
-    // Combine levels with their records
+
     const levelsWithRecords = (levels.results || []).map((level: any) => ({
       ...level,
       songName: level.songName && level.songName !== 'undefined by undefined' ? level.songName : null,
       tags: level.tags ? JSON.parse(level.tags) : [],
-      records: recordsByLevel[level.id] || []
+      records: recordsByLevel[level.id] || [],
     }));
-    
+
     return c.json(levelsWithRecords);
   } catch (error) {
     console.error('Error fetching levels:', error);
@@ -361,22 +804,20 @@ app.get('/api/levels/:id', async (c) => {
       FROM levels
       WHERE id = ?
     `).bind(c.req.param('id')).first();
-    
-    if (!level) {
-      return c.json({ error: 'Level not found' }, 404);
-    }
-    
+
+    if (!level) return c.json({ error: 'Level not found' }, 404);
+
     const records = await c.env.DB.prepare(`
-      SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts
+      SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts, points
       FROM records
       WHERE level_id = ?
       ORDER BY date DESC
     `).bind(c.req.param('id')).all();
-    
+
     return c.json({
       ...level,
       tags: (level.tags as string) ? JSON.parse(level.tags as string) : [],
-      records: (records.results || []).map((r: any) => ({ ...r, cbf: r.cbf === 1 }))
+      records: (records.results || []).map((r: any) => ({ ...r, cbf: r.cbf === 1 })),
     });
   } catch (error) {
     console.error('Error fetching level:', error);
@@ -387,26 +828,20 @@ app.get('/api/levels/:id', async (c) => {
 app.post('/api/levels', authenticateToken, async (c) => {
   try {
     const data = await c.req.json();
-    const {
-      id, hkgdRank, aredlRank, pemonlistRank, name, creator, verifier, levelId,
-      description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier, edelEnjoyment
-    } = data;
-    
-    // Convert undefined to null for SQLite
-    const safeBind = (val: any) => val ?? null;
-    
+    const { id, hkgdRank, aredlRank, pemonlistRank, name, creator, verifier, levelId,
+            description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier, edelEnjoyment } = data;
+
     await c.env.DB.prepare(`
-      INSERT INTO levels (
-        id, hkgd_rank, aredl_rank, pemonlist_rank, name, creator, verifier, level_id,
-        description, thumbnail, song_id, song_name, tags, date_added, pack, gddl_tier, nlw_tier, edel_enjoyment
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO levels (id, hkgd_rank, aredl_rank, pemonlist_rank, name, creator, verifier, level_id,
+        description, thumbnail, song_id, song_name, tags, date_added, pack, gddl_tier, nlw_tier, edel_enjoyment)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      safeBind(id), safeBind(hkgdRank), safeBind(aredlRank), safeBind(pemonlistRank),
-      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
-      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
-      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(gddlTier), safeBind(nlwTier), safeBind(edelEnjoyment)
+      safe(id), safe(hkgdRank), safe(aredlRank), safe(pemonlistRank),
+      safe(name), safe(creator), safe(verifier), safe(levelId),
+      safe(description), safe(thumbnail), safe(songId), safe(songName),
+      JSON.stringify(tags || []), safe(dateAdded), safe(pack), safe(gddlTier), safe(nlwTier), safe(edelEnjoyment)
     ).run();
-    
+
     notifyContentChanged(c.env);
     return c.json({ id, message: 'Level created successfully' }, 201);
   } catch (error) {
@@ -418,14 +853,9 @@ app.post('/api/levels', authenticateToken, async (c) => {
 app.put('/api/levels/:id', authenticateToken, async (c) => {
   try {
     const data = await c.req.json();
-    const {
-      hkgdRank, aredlRank, pemonlistRank, name, creator, verifier, levelId,
-      description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier
-    } = data;
-    
-    // Convert undefined to null for SQLite
-    const safeBind = (val: any) => val ?? null;
-    
+    const { hkgdRank, aredlRank, pemonlistRank, name, creator, verifier, levelId,
+            description, thumbnail, songId, songName, tags, dateAdded, pack, gddlTier, nlwTier } = data;
+
     await c.env.DB.prepare(`
       UPDATE levels SET
         hkgd_rank = ?, aredl_rank = ?, pemonlist_rank = ?, name = ?, creator = ?, verifier = ?,
@@ -433,13 +863,13 @@ app.put('/api/levels/:id', authenticateToken, async (c) => {
         tags = ?, date_added = ?, pack = ?, gddl_tier = ?, nlw_tier = ?
       WHERE id = ?
     `).bind(
-      safeBind(hkgdRank), safeBind(aredlRank), safeBind(pemonlistRank),
-      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
-      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
-      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(gddlTier), safeBind(nlwTier),
+      safe(hkgdRank), safe(aredlRank), safe(pemonlistRank),
+      safe(name), safe(creator), safe(verifier), safe(levelId),
+      safe(description), safe(thumbnail), safe(songId), safe(songName),
+      JSON.stringify(tags || []), safe(dateAdded), safe(pack), safe(gddlTier), safe(nlwTier),
       c.req.param('id')
     ).run();
-    
+
     notifyContentChanged(c.env);
     return c.json({ message: 'Level updated successfully' });
   } catch (error) {
@@ -459,7 +889,7 @@ app.delete('/api/levels/:id', authenticateToken, async (c) => {
   }
 });
 
-// === RECORDS ROUTES ===
+// ── Records ──────────────────────────────────────────
 
 app.post('/api/levels/:levelId/records', authenticateToken, async (c) => {
   try {
@@ -470,25 +900,25 @@ app.post('/api/levels/:levelId/records', authenticateToken, async (c) => {
     const fps = body.fps;
     const cbf = body.cbf;
     const attempts = body.attempts;
-    
-    // Convert undefined to null for SQLite
-    const safeBind = (val: any) => val ?? null;
-    
+
+    let points: number | null = null;
+    const level = await c.env.DB.prepare('SELECT id, hkgd_rank FROM levels WHERE id = ?').bind(c.req.param('levelId')).first();
+    if (level && (level as any).hkgd_rank) {
+      const totalLevelsResult = await c.env.DB.prepare('SELECT COUNT(*) as count FROM levels WHERE hkgd_rank IS NOT NULL').first();
+      const totalLevels = (totalLevelsResult as any)?.count || 0;
+      points = computePoints((level as any).hkgd_rank, totalLevels);
+    }
+
     const result = await c.env.DB.prepare(`
-      INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts, points)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      c.req.param('levelId'),
-      safeBind(player),
-      safeBind(date),
-      safeBind(videoUrl),
-      safeBind(fps),
-      cbf ? 1 : 0,
-      safeBind(attempts)
+      c.req.param('levelId'), safe(player), safe(date), safe(videoUrl),
+      safe(fps), cbf ? 1 : 0, safe(attempts), safe(points)
     ).run();
-    
+
     notifyContentChanged(c.env);
-    return c.json({ message: 'Record added successfully', id: result.meta.last_row_id }, 201);
+    return c.json({ message: 'Record added successfully', id: result.meta.last_row_id, points }, 201);
   } catch (error) {
     console.error('Error adding record:', error);
     return c.json({ error: 'Failed to add record' }, 500);
@@ -501,35 +931,26 @@ app.put('/api/records/:recordId', authenticateToken, async (c) => {
     const recordId = c.req.param('recordId');
     const updates: string[] = [];
     const values: any[] = [];
-    
-    const fields = ['player', 'date', 'video_url', 'fps', 'cbf', 'attempts'];
+
+    const fields = ['player', 'date', 'video_url', 'fps', 'cbf', 'attempts', 'points'];
     const dataMap: any = {
-      player: data.player,
-      date: data.date,
-      video_url: data.videoUrl,
-      fps: data.fps,
-      cbf: data.cbf ? 1 : 0,
-      attempts: data.attempts
+      player: data.player, date: data.date, video_url: data.videoUrl,
+      fps: data.fps, cbf: data.cbf ? 1 : 0, attempts: data.attempts, points: data.points,
     };
-    
+
     for (const field of fields) {
       if (dataMap[field] !== undefined) {
         updates.push(`${field} = ?`);
         values.push(dataMap[field]);
       }
     }
-    
-    if (updates.length === 0) {
-      return c.json({ error: 'No fields to update' }, 400);
-    }
-    
+
+    if (updates.length === 0) return c.json({ error: 'No fields to update' }, 400);
+
     values.push(parseInt(recordId));
     const result = await c.env.DB.prepare(`UPDATE records SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-    
-    if (result.meta.changes === 0) {
-      return c.json({ error: 'Record not found' }, 404);
-    }
-    
+
+    if (result.meta.changes === 0) return c.json({ error: 'Record not found' }, 404);
     return c.json({ message: 'Record updated successfully' });
   } catch (error) {
     console.error('Error updating record:', error);
@@ -541,11 +962,7 @@ app.delete('/api/records/:recordId', authenticateToken, async (c) => {
   try {
     const recordId = parseInt(c.req.param('recordId'));
     const result = await c.env.DB.prepare('DELETE FROM records WHERE id = ?').bind(recordId).run();
-    
-    if (result.meta.changes === 0) {
-      return c.json({ error: 'Record not found' }, 404);
-    }
-    
+    if (result.meta.changes === 0) return c.json({ error: 'Record not found' }, 404);
     return c.json({ message: 'Record deleted successfully' });
   } catch (error) {
     console.error('Error deleting record:', error);
@@ -553,7 +970,32 @@ app.delete('/api/records/:recordId', authenticateToken, async (c) => {
   }
 });
 
-// === MEMBERS ROUTES ===
+// ── Points Recalculation ─────────────────────────────
+
+app.post('/api/admin/recalculate-points', authenticateToken, async (c: any) => {
+  try {
+    const totalLevelsResult = await c.env.DB.prepare('SELECT COUNT(*) as count FROM levels WHERE hkgd_rank IS NOT NULL').first();
+    const totalLevels = (totalLevelsResult as any)?.count || 0;
+    if (totalLevels === 0) return c.json({ error: 'No levels found' }, 400);
+
+    const levels = await c.env.DB.prepare('SELECT id, hkgd_rank FROM levels WHERE hkgd_rank IS NOT NULL').all();
+    let updated = 0;
+
+    for (const level of (levels.results || [])) {
+      const points = computePoints((level as any).hkgd_rank, totalLevels);
+      await c.env.DB.prepare('UPDATE records SET points = ? WHERE level_id = ? AND (points IS NULL OR points != ?)')
+        .bind(points, (level as any).id, points).run();
+      updated++;
+    }
+
+    return c.json({ success: true, message: `Recalculated points for ${updated} levels` });
+  } catch (error) {
+    console.error('Recalculate points error:', error);
+    return c.json({ error: 'Failed to recalculate points' }, 500);
+  }
+});
+
+// ── Members ──────────────────────────────────────────
 
 app.get('/api/members', async (c) => {
   try {
@@ -562,7 +1004,6 @@ app.get('/api/members', async (c) => {
       FROM members
       ORDER BY levels_beaten DESC
     `).all();
-    
     return c.json(members.results || []);
   } catch (error) {
     console.error('Error fetching members:', error);
@@ -570,24 +1011,21 @@ app.get('/api/members', async (c) => {
   }
 });
 
-// === PLAYER MAPPING ROUTES ===
+// ── Player Mapping ───────────────────────────────────
 
 app.get('/api/player-mapping', async (c) => {
   try {
     const { gameName } = c.req.query();
-    
-    if (!gameName) {
-      return c.json({ error: 'gameName parameter required' }, 400);
-    }
-    
-    const mapping = await c.env.DB.prepare(`
-      SELECT db_name, account_id FROM player_mappings WHERE LOWER(game_name) = LOWER(?)
-    `).bind(gameName.toString()).first();
-    
+    if (!gameName) return c.json({ error: 'gameName parameter required' }, 400);
+
+    const mapping = await c.env.DB.prepare(
+      'SELECT db_name, account_id FROM player_mappings WHERE LOWER(game_name) = LOWER(?)'
+    ).bind(gameName.toString()).first();
+
     return c.json({
       dbName: mapping?.db_name || gameName,
       accountId: mapping?.account_id || null,
-      isMapped: !!mapping
+      isMapped: !!mapping,
     });
   } catch (error) {
     console.error('Error fetching player mapping:', error);
@@ -598,11 +1036,8 @@ app.get('/api/player-mapping', async (c) => {
 app.post('/api/player-mapping', authenticateToken, async (c) => {
   try {
     const { gameName, dbName, accountId } = await c.req.json();
-    
-    if (!gameName || !dbName) {
-      return c.json({ error: 'gameName and dbName are required' }, 400);
-    }
-    
+    if (!gameName || !dbName) return c.json({ error: 'gameName and dbName are required' }, 400);
+
     await c.env.DB.prepare(`
       INSERT INTO player_mappings (game_name, db_name, account_id)
       VALUES (?, ?, ?)
@@ -610,7 +1045,7 @@ app.post('/api/player-mapping', authenticateToken, async (c) => {
         db_name = excluded.db_name,
         account_id = excluded.account_id
     `).bind(gameName, dbName, accountId || null).run();
-    
+
     return c.json({ success: true, gameName, dbName });
   } catch (error) {
     console.error('Error creating player mapping:', error);
@@ -625,7 +1060,6 @@ app.get('/api/player-mappings', authenticateToken, async (c) => {
       FROM player_mappings
       ORDER BY created_at DESC
     `).all();
-    
     return c.json(result.results || []);
   } catch (error) {
     console.error('Error fetching player mappings:', error);
@@ -635,10 +1069,7 @@ app.get('/api/player-mappings', authenticateToken, async (c) => {
 
 app.delete('/api/player-mapping/:id', authenticateToken, async (c) => {
   try {
-    await c.env.DB.prepare('DELETE FROM player_mappings WHERE id = ?')
-      .bind(c.req.param('id'))
-      .run();
-    
+    await c.env.DB.prepare('DELETE FROM player_mappings WHERE id = ?').bind(c.req.param('id')).run();
     return c.json({ success: true });
   } catch (error) {
     console.error('Error deleting player mapping:', error);
@@ -646,19 +1077,17 @@ app.delete('/api/player-mapping/:id', authenticateToken, async (c) => {
   }
 });
 
-// === CHANGELOG ROUTES ===
+// ── Changelog ────────────────────────────────────────
 
 app.get('/api/changelog', async (c) => {
   try {
     const changelog = await c.env.DB.prepare(`
-      SELECT
-        id, date, level_name as levelName, level_id as levelId,
+      SELECT id, date, level_name as levelName, level_id as levelId,
         change_type as change, old_rank as oldRank, new_rank as newRank,
         description, list_type as listType
       FROM changelog
       ORDER BY date DESC
     `).all();
-    
     return c.json(changelog.results || []);
   } catch (error) {
     console.error('Error fetching changelog:', error);
@@ -669,16 +1098,10 @@ app.get('/api/changelog', async (c) => {
 app.post('/api/changelog', authenticateToken, async (c) => {
   try {
     const { id, date, levelName, levelId, change, oldRank, newRank, description, listType } = await c.req.json();
-    
-    // Convert undefined to null for optional fields (SQLite doesn't accept undefined)
-    const safeOldRank = oldRank ?? null;
-    const safeNewRank = newRank ?? null;
-    
     await c.env.DB.prepare(`
       INSERT INTO changelog (id, date, level_name, level_id, change_type, old_rank, new_rank, description, list_type)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, date, levelName, levelId, change, safeOldRank, safeNewRank, description, listType || 'classic').run();
-    
+    `).bind(id, date, levelName, levelId, change, safe(oldRank), safe(newRank), description, listType || 'classic').run();
     return c.json({ id, message: 'Changelog entry created successfully' }, 201);
   } catch (error) {
     console.error('Error creating changelog entry:', error);
@@ -696,24 +1119,20 @@ app.delete('/api/changelog/:id', authenticateToken, async (c) => {
   }
 });
 
-// === CONTENT ROUTES ===
+// ── Content ──────────────────────────────────────────
 
 app.get('/api/content', async (c) => {
   try {
     const contentRow = await c.env.DB.prepare("SELECT content_json FROM website_content WHERE id = 'main'").first();
-    
-    if (contentRow) {
-      return c.json(JSON.parse(contentRow.content_json as string));
-    }
-    
-    // Return default content
+    if (contentRow) return c.json(JSON.parse(contentRow.content_json as string));
+
     return c.json({
-      hero: { title: "HKGD DEMON LIST", subtitle: "Hong Kong Geometry Dash Community" },
-      stats: { levelsLabel: "Levels Listed", playersLabel: "Players", hardestLabel: "Hardest AREDL" },
-      listPage: { title: "Demon List", description: "All Extreme Demon levels beaten by HKGD members." },
-      platformerPage: { title: "Platformer Demon List" },
-      submitPage: { title: "Submit Record" },
-      footer: { description: "The official demon list for the Hong Kong Geometry Dash community." }
+      hero: { title: 'HKGD DEMON LIST', subtitle: 'Hong Kong Geometry Dash Community' },
+      stats: { levelsLabel: 'Levels Listed', playersLabel: 'Players', hardestLabel: 'Hardest AREDL' },
+      listPage: { title: 'Demon List', description: 'All Extreme Demon levels beaten by HKGD members.' },
+      platformerPage: { title: 'Platformer Demon List' },
+      submitPage: { title: 'Submit Record' },
+      footer: { description: 'The official demon list for the Hong Kong Geometry Dash community.' },
     });
   } catch (error) {
     console.error('Error fetching content:', error);
@@ -724,17 +1143,14 @@ app.get('/api/content', async (c) => {
 app.post('/api/content', authenticateToken, async (c) => {
   try {
     const content = await c.req.json();
-    const content_json = JSON.stringify(content);
     const updated_at = new Date().toISOString();
-    
     await c.env.DB.prepare(`
       INSERT INTO website_content (id, content_json, updated_at)
       VALUES ('main', ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         content_json = excluded.content_json,
         updated_at = excluded.updated_at
-    `).bind(content_json, updated_at).run();
-    
+    `).bind(JSON.stringify(content), updated_at).run();
     return c.json({ message: 'Content saved successfully' });
   } catch (error) {
     console.error('Error saving content:', error);
@@ -742,14 +1158,14 @@ app.post('/api/content', authenticateToken, async (c) => {
   }
 });
 
-// === PENDING SUBMISSIONS ===
+// ── Pending Submissions ──────────────────────────────
 
 app.get('/api/pending-submissions', async (c) => {
   try {
-    const submissions = await c.env.DB.prepare(`
-      SELECT * FROM pending_submissions WHERE status = 'pending' ORDER BY submitted_at DESC
-    `).all();
-    
+    const submissions = await c.env.DB.prepare(
+      "SELECT * FROM pending_submissions WHERE status = 'pending' ORDER BY submitted_at DESC"
+    ).all();
+
     return c.json((submissions.results || []).map((s: any) => ({
       id: s.id,
       levelId: s.level_id,
@@ -761,7 +1177,7 @@ app.get('/api/pending-submissions', async (c) => {
       submittedBy: s.submitted_by,
       status: s.status,
       isPlatformer: s.is_platformer === 1,
-      adminDecidesDifficulty: s.admin_decides_difficulty === 1
+      adminDecidesDifficulty: s.admin_decides_difficulty === 1,
     })));
   } catch (error) {
     console.error('Error fetching submissions:', error);
@@ -773,26 +1189,14 @@ app.post('/api/pending-submissions', async (c) => {
   try {
     const data = await c.req.json();
     const { id, levelId, levelName, isNewLevel, record, record_data, level_data, submittedAt, submittedBy, status } = data;
-    
-    // Support both data formats
     const actualRecordData = record_data || JSON.stringify(record);
     const actualLevelData = level_data ? JSON.stringify(level_data) : null;
-    
+
     await c.env.DB.prepare(`
       INSERT INTO pending_submissions (id, level_id, level_name, is_new_level, record_data, level_data, submitted_at, submitted_by, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      id,
-      levelId,
-      levelName,
-      isNewLevel ? 1 : 0,
-      actualRecordData,
-      actualLevelData,
-      submittedAt,
-      submittedBy,
-      status || 'pending'
-    ).run();
-    
+    `).bind(id, levelId, levelName, isNewLevel ? 1 : 0, actualRecordData, actualLevelData, submittedAt, submittedBy, status || 'pending').run();
+
     return c.json({ success: true, id, message: 'Submission created successfully' }, 201);
   } catch (error) {
     console.error('Error creating submission:', error);
@@ -800,36 +1204,20 @@ app.post('/api/pending-submissions', async (c) => {
   }
 });
 
-// Platformer submissions endpoint - for admin to decide difficulty placement
 app.post('/api/platformer-submissions', async (c) => {
   try {
     const data = await c.req.json();
     const { id, levelId, levelName, isNewLevel, record_data, submittedAt, submittedBy, status, adminDecidesDifficulty } = data;
-    
-    // Store in pending submissions with platformer flag
+
     await c.env.DB.prepare(`
       INSERT INTO pending_submissions (id, level_id, level_name, is_new_level, record_data, level_data, submitted_at, submitted_by, status, is_platformer, admin_decides_difficulty)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      id,
-      levelId,
-      levelName,
-      isNewLevel ? 1 : 0,
-      record_data,
-      null, // No level data for existing levels
-      submittedAt,
-      submittedBy,
-      status || 'pending',
-      1, // Mark as platformer
-      adminDecidesDifficulty ? 1 : 0 // Admin will decide difficulty placement
-    ).run();
-    
-    return c.json({ 
-      success: true, 
-      id, 
+    `).bind(id, levelId, levelName, isNewLevel ? 1 : 0, record_data, null, submittedAt, submittedBy, status || 'pending', 1, adminDecidesDifficulty ? 1 : 0).run();
+
+    return c.json({
+      success: true, id,
       message: 'Platformer submission created successfully. Admin will review and decide difficulty placement.',
-      requiresAdminReview: true,
-      adminDecidesDifficulty: true
+      requiresAdminReview: true, adminDecidesDifficulty: true,
     }, 201);
   } catch (error) {
     console.error('Error creating platformer submission:', error);
@@ -841,15 +1229,9 @@ app.put('/api/pending-submissions/:id', async (c) => {
   try {
     const id = c.req.param('id');
     const { status } = await c.req.json();
-    
-    if (!['pending', 'approved', 'rejected'].includes(status)) {
-      return c.json({ error: 'Invalid status' }, 400);
-    }
-    
-    await c.env.DB.prepare(`
-      UPDATE pending_submissions SET status = ? WHERE id = ?
-    `).bind(status, id).run();
-    
+    if (!['pending', 'approved', 'rejected'].includes(status)) return c.json({ error: 'Invalid status' }, 400);
+
+    await c.env.DB.prepare('UPDATE pending_submissions SET status = ? WHERE id = ?').bind(status, id).run();
     return c.json({ success: true, message: 'Submission updated successfully' });
   } catch (error) {
     console.error('Error updating submission:', error);
@@ -857,20 +1239,16 @@ app.put('/api/pending-submissions/:id', async (c) => {
   }
 });
 
-// === PLATFORMER DEMONS PROXY ===
-// Uses local platformer_levels table instead of external API
+// ── Platformer Levels ────────────────────────────────
+
 app.get('/api/platformer-demons', async (c) => {
   try {
     const levels = await c.env.DB.prepare(`
-      SELECT
-        id, hkgd_rank as hkgdRank,
-        name, creator, verifier, level_id as levelId, description, thumbnail,
-        song_id as songId, song_name as songName, tags, date_added as dateAdded,
-        pack, difficulty
+      SELECT id, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId, description, thumbnail,
+        song_id as songId, song_name as songName, tags, date_added as dateAdded, pack, difficulty
       FROM platformer_levels
       ORDER BY hkgd_rank ASC
     `).all();
-    
     return c.json({ demons: levels.results || [] });
   } catch (error) {
     console.error('Error fetching platformer demons:', error);
@@ -878,38 +1256,25 @@ app.get('/api/platformer-demons', async (c) => {
   }
 });
 
-// === GDBrowser/History GD Proxy ===
+// ── GDBrowser / History GD Proxy ─────────────────────
+
 app.get('/api/gdbrowser/level/:levelId', async (c) => {
   try {
     const levelId = c.req.param('levelId');
-    // Try history GD API search to get level by ID
     const response = await fetch(`https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${levelId}&limit=1&filter=online_id%3D${levelId}`);
     if (response.ok) {
       const data = await response.json() as any;
-      // Return first hit if found
-      if (data.hits && data.hits.length > 0) {
-        return c.json(data.hits[0]);
-      }
+      if (data.hits && data.hits.length > 0) return c.json(data.hits[0]);
       return c.json({ error: 'Level not found' }, 404);
     }
-    // Fallback to gdbrowser with key
     const gdbResponse = await fetch(`https://www.gdbrowser.com/api/level/${levelId}?key=Wmfd2893gb7`, {
-      headers: {
-        'User-Agent': '',
-        'Accept': 'application/json'
-      }
+      headers: { 'User-Agent': '', 'Accept': 'application/json' },
     });
     const gdbData = await gdbResponse.text();
-    
     if (gdbData.startsWith('<') || gdbData.startsWith('-1') || gdbData.startsWith('Not Found')) {
       return c.json({ error: 'Level not found' }, 404);
     }
-    
-    try {
-      return c.json(JSON.parse(gdbData));
-    } catch {
-      return c.json({ error: 'Invalid response' }, 500);
-    }
+    try { return c.json(JSON.parse(gdbData)); } catch { return c.json({ error: 'Invalid response' }, 500); }
   } catch (error) {
     console.error('Error fetching level:', error);
     return c.json({ error: 'Failed to fetch level' }, 500);
@@ -919,10 +1284,7 @@ app.get('/api/gdbrowser/level/:levelId', async (c) => {
 app.get('/api/gdbrowser/search', async (c) => {
   try {
     const query = c.req.query('q');
-    if (!query) {
-      return c.json({ error: 'Query required' }, 400);
-    }
-    // Use history GD search API - filter for platformer (cache_length = 5)
+    if (!query) return c.json({ error: 'Query required' }, 400);
     const filter = 'cache_length=5';
     const response = await fetch(`https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${encodeURIComponent(query)}&limit=20&filter=${encodeURIComponent(filter)}`);
     if (response.ok) {
@@ -936,7 +1298,7 @@ app.get('/api/gdbrowser/search', async (c) => {
   }
 });
 
-// === SETTINGS ROUTES ===
+// ── Settings ─────────────────────────────────────────
 
 app.get('/api/settings', async (c) => {
   try {
@@ -957,7 +1319,6 @@ app.put('/api/settings/:key', authenticateToken, async (c) => {
     const key = c.req.param('key');
     const { value } = await c.req.json();
     const updated_at = new Date().toISOString();
-    
     await c.env.DB.prepare(`
       INSERT INTO settings (key, value, updated_at)
       VALUES (?, ?, ?)
@@ -965,7 +1326,6 @@ app.put('/api/settings/:key', authenticateToken, async (c) => {
         value = excluded.value,
         updated_at = excluded.updated_at
     `).bind(key, value ? 'true' : 'false', updated_at).run();
-    
     return c.json({ message: 'Setting updated successfully', key, value });
   } catch (error) {
     console.error('Error updating setting:', error);
@@ -973,27 +1333,20 @@ app.put('/api/settings/:key', authenticateToken, async (c) => {
   }
 });
 
-// === IP BAN MANAGEMENT ===
+// ── IP Bans ──────────────────────────────────────────
 
 app.get('/api/ip-bans', authenticateToken, async (c) => {
   try {
-    const bans = await c.env.DB.prepare(`
-      SELECT ip, attempts, banned_until, updated_at
-      FROM ip_bans
-      ORDER BY updated_at DESC
-    `).all();
-    
+    const bans = await c.env.DB.prepare(`SELECT ip, attempts, banned_until, updated_at FROM ip_bans ORDER BY updated_at DESC`).all();
     const now = Date.now();
-    const formattedBans = (bans.results || []).map((ban: any) => ({
+    return c.json((bans.results || []).map((ban: any) => ({
       ip: ban.ip,
       attempts: ban.attempts,
       bannedUntil: ban.banned_until,
       isCurrentlyBanned: ban.banned_until > now,
       remainingTime: ban.banned_until > now ? Math.ceil((ban.banned_until - now) / 1000) : 0,
-      updatedAt: ban.updated_at
-    }));
-    
-    return c.json(formattedBans);
+      updatedAt: ban.updated_at,
+    })));
   } catch (error) {
     console.error('Error fetching IP bans:', error);
     return c.json({ error: 'Failed to fetch IP bans' }, 500);
@@ -1002,157 +1355,96 @@ app.get('/api/ip-bans', authenticateToken, async (c) => {
 
 app.delete('/api/ip-bans/:ip', authenticateToken, async (c) => {
   try {
-    const ip = c.req.param('ip');
-    
-    await c.env.DB.prepare('DELETE FROM ip_bans WHERE ip = ?').bind(ip).run();
-    
-    return c.json({ message: 'IP unbanned successfully', ip });
+    await c.env.DB.prepare('DELETE FROM ip_bans WHERE ip = ?').bind(c.req.param('ip')).run();
+    return c.json({ message: 'IP unbanned successfully', ip: c.req.param('ip') });
   } catch (error) {
     console.error('Error unbanning IP:', error);
     return c.json({ error: 'Failed to unban IP' }, 500);
   }
 });
 
-// === AREDL SYNC ===
+// ── AREDL Sync ───────────────────────────────────────
 
 app.post('/api/aredl-sync', authenticateToken, async (c) => {
   try {
-    // Fetch AREDL levels from the official API
     const response = await fetch('https://api.aredl.net/v2/api/aredl/levels');
-    if (!response.ok) {
-      throw new Error('Failed to fetch AREDL data');
-    }
+    if (!response.ok) throw new Error('Failed to fetch AREDL data');
     const aredlLevels = await response.json() as any[];
-    
-    // Get all current HKGD levels
-    const currentLevels = await c.env.DB.prepare(`
-      SELECT id, name, aredl_rank as aredlRank FROM levels
-    `).all();
-    
+
+    const currentLevels = await c.env.DB.prepare(`SELECT id, name, aredl_rank as aredlRank FROM levels`).all();
     const levelMap = new Map<string, { id: string; name: string; oldRank: number | null }>();
     for (const level of (currentLevels.results || [])) {
       levelMap.set((level as any).name.toLowerCase().trim(), {
-        id: (level as any).id,
-        name: (level as any).name,
-        oldRank: (level as any).aredlRank
+        id: (level as any).id, name: (level as any).name, oldRank: (level as any).aredlRank,
       });
     }
-    
-    // Create a map of level name -> AREDL data
+
     const aredlDataMap = new Map<string, any>();
     for (const aredlLevel of aredlLevels) {
       const name = aredlLevel.name?.toLowerCase().trim();
-      if (name) {
-        aredlDataMap.set(name, aredlLevel);
-      }
+      if (name) aredlDataMap.set(name, aredlLevel);
     }
-    
-    // Update AREDL ranks and extra data for all matching levels
+
     const updates: { id: string; name: string; oldRank: number | null; newRank: number }[] = [];
-    
+
     for (const [name, levelInfo] of levelMap) {
       const aredlData = aredlDataMap.get(name);
       if (aredlData) {
         const newRank = aredlData.position || aredlData.rank;
-        const edelEnjoyment = aredlData.edel_enjoyment ?? null;
-        const nlwTier = aredlData.nlw_tier ?? null;
-        const gddlTier = aredlData.gddl_tier ?? null;
-        
         await c.env.DB.prepare(`
           UPDATE levels SET aredl_rank = ?, edel_enjoyment = ?, nlw_tier = ?, gddl_tier = ? WHERE id = ?
-        `).bind(newRank, edelEnjoyment, nlwTier, gddlTier, levelInfo.id).run();
-        
-        updates.push({
-          id: levelInfo.id,
-          name: levelInfo.name,
-          oldRank: levelInfo.oldRank,
-          newRank: newRank
-        });
+        `).bind(newRank, aredlData.edel_enjoyment ?? null, aredlData.nlw_tier ?? null, aredlData.gddl_tier ?? null, levelInfo.id).run();
+        updates.push({ id: levelInfo.id, name: levelInfo.name, oldRank: levelInfo.oldRank, newRank });
       }
     }
-    
-    // Re-sort HKGD ranks based on AREDL difficulty (lower AREDL rank = harder = lower HKGD rank)
-    const sortedLevels = await c.env.DB.prepare(`
-      SELECT id FROM levels 
-      WHERE aredl_rank IS NOT NULL 
-      ORDER BY aredl_rank ASC
-    `).all();
-    
+
+    const sortedLevels = await c.env.DB.prepare(
+      'SELECT id FROM levels WHERE aredl_rank IS NOT NULL ORDER BY aredl_rank ASC'
+    ).all();
     let hkgdRank = 1;
     for (const level of (sortedLevels.results || [])) {
-      await c.env.DB.prepare(`
-        UPDATE levels SET hkgd_rank = ? WHERE id = ?
-      `).bind(hkgdRank, (level as any).id).run();
+      await c.env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run();
       hkgdRank++;
     }
-    
-    // Get levels without AREDL rank and assign them ranks after
-    const unrankedLevels = await c.env.DB.prepare(`
-      SELECT id FROM levels 
-      WHERE aredl_rank IS NULL 
-      ORDER BY hkgd_rank ASC
-    `).all();
-    
+
+    const unrankedLevels = await c.env.DB.prepare(
+      'SELECT id FROM levels WHERE aredl_rank IS NULL ORDER BY hkgd_rank ASC'
+    ).all();
     for (const level of (unrankedLevels.results || [])) {
-      await c.env.DB.prepare(`
-        UPDATE levels SET hkgd_rank = ? WHERE id = ?
-      `).bind(hkgdRank, (level as any).id).run();
+      await c.env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run();
       hkgdRank++;
     }
-    
-    // Create changelog entry for the sync
+
     const today = new Date();
     const dateStr = `${today.getFullYear().toString().slice(-2)}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
-    
     await c.env.DB.prepare(`
       INSERT INTO changelog (id, date, level_name, level_id, change_type, description, list_type)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      `sync-${Date.now()}`,
-      dateStr,
-      'AREDL Sync',
-      'system',
-      'sync',
-      `AREDL sync completed. Updated ${updates.length} level rankings.`,
-      'classic'
-    ).run();
-    
+    `).bind(`sync-${Date.now()}`, dateStr, 'AREDL Sync', 'system', 'sync', `AREDL sync completed. Updated ${updates.length} level rankings.`, 'classic').run();
+
     notifyContentChanged(c.env);
-    return c.json({
-      success: true,
-      message: `Synced ${updates.length} levels with AREDL`,
-      updatedLevels: updates.length,
-      details: updates.slice(0, 10) // Return first 10 for preview
-    });
+    return c.json({ success: true, message: `Synced ${updates.length} levels with AREDL`, updatedLevels: updates.length, details: updates.slice(0, 10) });
   } catch (error) {
     console.error('AREDL sync error:', error);
     return c.json({ error: 'Failed to sync with AREDL', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
   }
 });
 
-// === GOOGLE SHEETS SYNC ===
+// ── Google Sheets Sync ───────────────────────────────
 
 app.post('/api/google-sheets/sync', authenticateToken, async (c) => {
   try {
     const apiKey = c.env.GOOGLE_SHEETS_API_KEY;
     const spreadsheetId = c.env.GOOGLE_SHEET_ID;
     const sheetRange = c.env.GOOGLE_SHEET_RANGE || "'Classic Demon'!A1:GX2000";
+    if (!apiKey || !spreadsheetId) return c.json({ error: 'Google Sheets not configured' }, 500);
 
-    if (!apiKey || !spreadsheetId) {
-      return c.json({ error: 'Google Sheets not configured' }, 500);
-    }
-
-    // 1. Fetch sheet data
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetRange)}?key=${apiKey}`;
     const response = await fetch(url);
-    if (!response.ok) {
-      return c.json({ error: 'Failed to fetch sheet data', details: await response.text() }, 500);
-    }
-
+    if (!response.ok) return c.json({ error: 'Failed to fetch sheet data', details: await response.text() }, 500);
     const rows = (await response.json() as any).values || [];
     if (rows.length < 2) return c.json({ error: 'No data found' }, 400);
 
-    // 2. Pre-fetch existing levels by level_id (game ID) — DB may use hkgd-N style primary keys
     const existingLevels = await c.env.DB.prepare('SELECT id, level_id as gameId, name, aredl_rank as aredlRank FROM levels').all();
     const levelByGameId = new Map<string, any>();
     const existingNames = new Set<string>();
@@ -1163,15 +1455,10 @@ app.post('/api/google-sheets/sync', authenticateToken, async (c) => {
     }
 
     const allRecords = await c.env.DB.prepare('SELECT level_id, player, date FROM records').all();
-    const existingRecordSet = new Set(
-      (allRecords.results || []).map((r: any) => `${r.level_id}|${r.player}|${r.date}`)
-    );
+    const existingRecordSet = new Set((allRecords.results || []).map((r: any) => `${r.level_id}|${r.player}|${r.date}`));
 
-    // 3. Parse rows (col: 0=Placement, 1=Enj., 2=ID, 3=Name, 4=Victors, then groups of 4 per player)
     const now = new Date().toISOString();
-    const results: any[] = [];
-    let addedLevels = 0, updatedLevels = 0, addedRecords = 0;
-
+    let addedLevels = 0, addedRecords = 0;
     const levelsToInsert: any[] = [];
     const recordsToInsert: any[] = [];
 
@@ -1181,24 +1468,17 @@ app.post('/api/google-sheets/sync', authenticateToken, async (c) => {
       const gameId = row[2]?.toString().trim();
       const levelName = row[3]?.toString().trim();
       if (!gameId || !levelName) continue;
-      // Column E (index 4) = victors count — skip if not a pure positive integer
-      // (reject strings like "10% (shardscapes)" which parseInt would extract 10 from)
       const victorsRaw = row[4]?.toString().trim();
       if (!victorsRaw || !/^\d+$/.test(victorsRaw) || parseInt(victorsRaw, 10) < 1) continue;
-
-      // Skip if a level with the same name already exists in the DB
       if (existingNames.has(levelName.toLowerCase())) continue;
 
       const aredlRank = placement && !isNaN(Number(placement)) ? parseInt(placement) : null;
-
-      // If level exists in DB, only add new records — don't touch the level itself
       const existing = levelByGameId.get(gameId);
       const dbId = existing ? (existing as any).id : gameId;
 
       if (!existing) {
         levelsToInsert.push({ id: gameId, gameId, name: levelName, aredlRank });
         addedLevels++;
-        results.push({ name: levelName, action: 'added', aredlRank });
       }
 
       for (let pi = 0; pi < 50; pi++) {
@@ -1219,23 +1499,12 @@ app.post('/api/google-sheets/sync', authenticateToken, async (c) => {
       }
     }
 
-    // 4. INSERT new levels — for each row, use INSERT OR IGNORE so we
-    // don't fail on id conflicts (level already in DB with a different pk).
-    // IMPORTANT: creator & verifier are NOT NULL in the DB, use '' not NULL.
-    const insertStmts: any[] = [];
-    for (const l of levelsToInsert) {
-      insertStmts.push(c.env.DB.prepare(`
-        INSERT OR IGNORE INTO levels (id, hkgd_rank, aredl_rank, name, creator, verifier, level_id, tags, date_added)
-        VALUES (?, 0, ?, ?, '', '', ?, ?, ?)
-      `).bind(l.id, l.aredlRank, l.name, l.gameId,
-        JSON.stringify(l.aredlRank ? ['Overall'] : []), now
-      ));
-    }
+    const insertStmts = levelsToInsert.map(l => c.env.DB.prepare(`
+      INSERT OR IGNORE INTO levels (id, hkgd_rank, aredl_rank, name, creator, verifier, level_id, tags, date_added)
+      VALUES (?, 0, ?, ?, '', '', ?, ?, ?)
+    `).bind(l.id, l.aredlRank, l.name, l.gameId, JSON.stringify(l.aredlRank ? ['Overall'] : []), now));
     if (insertStmts.length) await c.env.DB.batch(insertStmts);
 
-    // 5. Batch INSERT records — D1 batch limit is 100 stmts, but we can
-    // safely ignore FK errors by catching the batch-level error and
-    // falling back to individual inserts for those that fail
     const BATCH_SIZE = 80;
     for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
       const chunk = recordsToInsert.slice(i, i + BATCH_SIZE);
@@ -1243,51 +1512,35 @@ app.post('/api/google-sheets/sync', authenticateToken, async (c) => {
         INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
         VALUES (?, ?, ?, ?, ?, 0, NULL)
       `).bind(r.levelId, r.player, r.date, r.videoUrl, r.fps));
-      try {
-        await c.env.DB.batch(stmts);
-      } catch (batchErr) {
-        console.error('Records batch failed, falling back to individual inserts:', String(batchErr));
+      try { await c.env.DB.batch(stmts); } catch {
         for (const r of chunk) {
-          try {
-            await c.env.DB.prepare(`
-              INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
-              VALUES (?, ?, ?, ?, ?, 0, NULL)
-            `).bind(r.levelId, r.player, r.date, r.videoUrl, r.fps).run();
-          } catch (e) {
-            console.error('Skipping record:', r.levelId, r.player, r.date, String(e));
-          }
+          try { await c.env.DB.prepare(`
+            INSERT INTO records (level_id, player, date, video_url, fps, cbf, attempts)
+            VALUES (?, ?, ?, ?, ?, 0, NULL)
+          `).bind(r.levelId, r.player, r.date, r.videoUrl, r.fps).run(); } catch {}
         }
       }
     }
 
-    // 6. Changelog — don't touch existing levels or re-sort ranks
     const d = new Date();
     const dateStr = `${d.getFullYear().toString().slice(-2)}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
     await c.env.DB.prepare(`
       INSERT INTO changelog (id, date, level_name, level_id, change_type, description, list_type)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(`gsheet-${Date.now()}`, dateStr, 'Google Sheets Sync', 'system', 'sync',
-      `Added ${addedLevels} levels · Updated ${updatedLevels} ranks · Added ${addedRecords} records`,
-      'classic'
-    ).run();
+      `Added ${addedLevels} levels · Added ${addedRecords} records`, 'classic').run();
 
-    return c.json({
-      success: true,
-      message: `Synced: ${addedLevels} added, ${updatedLevels} ranks updated, ${addedRecords} records`,
-      total: rows.length - 1,
-      addedLevels, updatedLevels, addedRecords,
-      results: results.slice(0, 20)
-    });
+    return c.json({ success: true, message: `Synced: ${addedLevels} levels, ${addedRecords} records`, addedLevels, addedRecords });
   } catch (error) {
     console.error('Google Sheets sync error:', error);
     return c.json({ error: 'Sync failed', details: error instanceof Error ? error.message : String(error) }, 500);
   }
 });
 
-// Sync level details from History GD API (for rated levels only)
+// ── Sync Level Details ───────────────────────────────
+
 app.post('/api/levels/sync-details', authenticateToken, async (c) => {
   try {
-    // Get all rated levels (have aredl_rank) - limit to 50 for timeout reasons
     const levels = await c.env.DB.prepare(`
       SELECT id, level_id, name, creator, verifier, thumbnail, song_id, song_name
       FROM levels
@@ -1299,244 +1552,52 @@ app.post('/api/levels/sync-details', authenticateToken, async (c) => {
     const levelList = levels.results || [];
     const updates: any[] = [];
 
-    // Process without delay for speed, History GD can handle it
     for (const level of levelList) {
       try {
         const response = await fetch(
           `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${level.level_id}&limit=1&filter=online_id%3D${level.level_id}`
         );
-
         if (response.ok) {
           const data = await response.json() as any;
           const hit = data.hits?.[0];
-
           if (hit) {
             const updatesObj: any = {};
-
-            // Update creator (cache_username)
-            if (hit.cache_username && hit.cache_username !== level.creator) {
-              updatesObj.creator = hit.cache_username;
-            }
-
-            // Update thumbnail using levelthumbs
-            const newThumbnail = hit.cache_level_string_available 
-              ? `https://levelthumbs.prevter.me/thumbnail/${level.level_id}`
-              : null;
-            if (newThumbnail && newThumbnail !== level.thumbnail) {
-              updatesObj.thumbnail = newThumbnail;
-            }
-
-            // Update song ID if available
-            if (hit.cache_song_id && hit.cache_song_id !== level.song_id?.toString()) {
-              updatesObj.song_id = hit.cache_song_id.toString();
-            }
+            if (hit.cache_username && hit.cache_username !== level.creator) updatesObj.creator = hit.cache_username;
+            const newThumbnail = hit.cache_level_string_available
+              ? `https://levelthumbs.prevter.me/thumbnail/${level.level_id}` : null;
+            if (newThumbnail && newThumbnail !== level.thumbnail) updatesObj.thumbnail = newThumbnail;
+            if (hit.cache_song_id && hit.cache_song_id !== level.song_id?.toString()) updatesObj.song_id = hit.cache_song_id.toString();
 
             if (Object.keys(updatesObj).length > 0) {
               const setClause = Object.keys(updatesObj).map(k => `${k} = ?`).join(', ');
-              const values = Object.values(updatesObj);
-              
-              await c.env.DB.prepare(`
-                UPDATE levels SET ${setClause} WHERE id = ?
-              `).bind(...values, level.id).run();
-
+              await c.env.DB.prepare(`UPDATE levels SET ${setClause} WHERE id = ?`).bind(...Object.values(updatesObj), level.id).run();
               updates.push({ id: level.id, name: level.name, changes: updatesObj });
             }
           }
         }
+        await new Promise(r => setTimeout(r, 20));
       } catch (err) {
         console.error(`Failed to fetch ${level.name}:`, err);
       }
     }
 
-    return c.json({
-      success: true,
-      message: `Synced details for ${updates.length} levels`,
-      updatedLevels: updates.length,
-      details: updates.slice(0, 10)
-    });
+    return c.json({ success: true, message: `Synced details for ${updates.length} levels`, updatedLevels: updates.length, details: updates.slice(0, 10) });
   } catch (error) {
     console.error('Level details sync error:', error);
     return c.json({ error: 'Failed to sync level details', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
   }
 });
 
-// Sync platformer level details from History GD API
-app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => {
-  try {
-    // Get all platformer levels - limit to 30 for timeout reasons
-    const levels = await c.env.DB.prepare(`
-      SELECT id, level_id, name, creator, verifier, thumbnail, song_id, song_name
-      FROM platformer_levels
-      ORDER BY hkgd_rank ASC
-      LIMIT 30
-    `).all();
+// ── Suggestions ──────────────────────────────────────
 
-    const levelList = levels.results || [];
-    const updates: any[] = [];
-
-    for (const level of levelList) {
-      try {
-        const response = await fetch(
-          `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${level.level_id}&limit=1&filter=online_id%3D${level.level_id}`
-        );
-
-        if (response.ok) {
-          const data = await response.json() as any;
-          const hit = data.hits?.[0];
-
-          if (hit) {
-            const updatesObj: any = {};
-
-            // Update creator (cache_username)
-            if (hit.cache_username && hit.cache_username !== level.creator) {
-              updatesObj.creator = hit.cache_username;
-            }
-
-            // Update thumbnail using levelthumbs
-            const newThumbnail = hit.cache_level_string_available 
-              ? `https://levelthumbs.prevter.me/thumbnail/${level.level_id}`
-              : null;
-            if (newThumbnail && newThumbnail !== level.thumbnail) {
-              updatesObj.thumbnail = newThumbnail;
-            }
-
-            // Update song ID if available
-            if (hit.cache_song_id && hit.cache_song_id !== level.song_id?.toString()) {
-              updatesObj.song_id = hit.cache_song_id.toString();
-            }
-
-            if (Object.keys(updatesObj).length > 0) {
-              const setClause = Object.keys(updatesObj).map(k => `${k} = ?`).join(', ');
-              const values = Object.values(updatesObj);
-              
-              await c.env.DB.prepare(`
-                UPDATE platformer_levels SET ${setClause} WHERE id = ?
-              `).bind(...values, level.id).run();
-
-              updates.push({ id: level.id, name: level.name, changes: updatesObj });
-            }
-          }
-        }
-      } catch (err) {
-        console.error(`Failed to fetch ${level.name}:`, err);
-      }
-    }
-
-    return c.json({
-      success: true,
-      message: `Synced details for ${updates.length} platformer levels`,
-      updatedLevels: updates.length,
-      details: updates.slice(0, 10)
-    });
-  } catch (error) {
-    console.error('Platformer level details sync error:', error);
-    return c.json({ error: 'Failed to sync platformer level details', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
-  }
-});
-
-// Bulk import platformer levels from data
-app.post('/api/platformer-levels/bulk-import', authenticateToken, async (c) => {
-  try {
-    const levels = await c.req.json();
-    if (!Array.isArray(levels)) {
-      return c.json({ error: 'Expected array of levels' }, 400);
-    }
-
-    const results: any[] = [];
-    const errors: string[] = [];
-
-    for (const levelData of levels) {
-      try {
-        const { name, levelId, hkgdRank, creator, records } = levelData;
-        const id = `plat-${levelId}`;
-
-        // Check if already exists
-        const existing = await c.env.DB.prepare('SELECT id FROM platformer_levels WHERE id = ?').bind(id).first();
-        if (existing) {
-          results.push({ name, status: 'skipped', reason: 'already exists' });
-          continue;
-        }
-
-        // Fetch details from History GD
-        let details: any = null;
-        try {
-          const response = await fetch(
-            `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${levelId}&limit=1&filter=online_id%3D${levelId}`
-          );
-          if (response.ok) {
-            const data = await response.json() as any;
-            details = data.hits?.[0];
-          }
-        } catch (e) {
-          // Ignore fetch errors
-        }
-
-        // Insert level
-        await c.env.DB.prepare(`
-          INSERT INTO platformer_levels (id, hkgd_rank, name, creator, verifier, level_id, thumbnail, tags, date_added)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          id,
-          hkgdRank,
-          details?.cache_level_name || name,
-          details?.cache_username || creator || 'Unknown',
-          details?.cache_username || creator || 'Unknown',
-          levelId,
-          details?.cache_level_string_available ? `https://levelthumbs.prevter.me/thumbnail/${levelId}` : null,
-          JSON.stringify(['Platformer']),
-          new Date().toISOString()
-        ).run();
-
-        // Insert records if any
-        if (records && Array.isArray(records)) {
-          for (const record of records) {
-            const recordId = `plat-rec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            await c.env.DB.prepare(`
-              INSERT INTO platformer_records (id, level_id, player, date, video_url, fps, cbf)
-              VALUES (?, ?, ?, ?, ?, ?, ?)
-            `).bind(
-              recordId,
-              id,
-              record.player,
-              record.date,
-              record.videoUrl || null,
-              record.fps || 60,
-              record.cbf || false
-            ).run();
-          }
-        }
-
-        results.push({ name, status: 'added', hkgdRank });
-      } catch (err) {
-        errors.push(`${levelData.name}: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      }
-    }
-
-    return c.json({
-      success: true,
-      message: `Imported ${results.filter(r => r.status === 'added').length} levels`,
-      results: results.slice(0, 20),
-      errors: errors.slice(0, 10)
-    });
-  } catch (error) {
-    console.error('Bulk import error:', error);
-    return c.json({ error: 'Failed to bulk import', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
-  }
-});
-
-// === SUGGESTIONS ROUTES ===
-// Get all suggestions (public)
 app.get('/api/suggestions', async (c) => {
   try {
     const suggestions = await c.env.DB.prepare(`
-      SELECT 
-        id, type, title, description, level_id as levelId, level_name as levelName,
+      SELECT id, type, title, description, level_id as levelId, level_name as levelName,
         submitted_by as submittedBy, submitted_at as submittedAt, status,
         admin_notes as adminNotes, resolved_at as resolvedAt, resolved_by as resolvedBy
-      FROM suggestions
-      ORDER BY submitted_at DESC
+      FROM suggestions ORDER BY submitted_at DESC
     `).all();
-    
     return c.json(suggestions.results || []);
   } catch (error) {
     console.error('Error fetching suggestions:', error);
@@ -1544,19 +1605,14 @@ app.get('/api/suggestions', async (c) => {
   }
 });
 
-// Get pending suggestions (for admin panel)
 app.get('/api/suggestions/pending', async (c) => {
   try {
     const suggestions = await c.env.DB.prepare(`
-      SELECT 
-        id, type, title, description, level_id as levelId, level_name as levelName,
+      SELECT id, type, title, description, level_id as levelId, level_name as levelName,
         submitted_by as submittedBy, submitted_at as submittedAt, status,
         admin_notes as adminNotes, resolved_at as resolvedAt, resolved_by as resolvedBy
-      FROM suggestions
-      WHERE status = 'pending'
-      ORDER BY submitted_at DESC
+      FROM suggestions WHERE status = 'pending' ORDER BY submitted_at DESC
     `).all();
-    
     return c.json(suggestions.results || []);
   } catch (error) {
     console.error('Error fetching pending suggestions:', error);
@@ -1564,20 +1620,15 @@ app.get('/api/suggestions/pending', async (c) => {
   }
 });
 
-// Create a new suggestion (public)
 app.post('/api/suggestions', async (c) => {
   try {
-    const data = await c.req.json();
-    const { type, title, description, levelId, levelName, submittedBy } = data;
-    
+    const { type, title, description, levelId, levelName, submittedBy } = await c.req.json();
     const id = `suggestion-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const submittedAt = new Date().toISOString();
-    
     await c.env.DB.prepare(`
       INSERT INTO suggestions (id, type, title, description, level_id, level_name, submitted_by, submitted_at, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
     `).bind(id, type || 'issue', title, description, levelId || null, levelName || null, submittedBy || null, submittedAt).run();
-    
     return c.json({ success: true, id, message: 'Suggestion submitted successfully' }, 201);
   } catch (error) {
     console.error('Error creating suggestion:', error);
@@ -1585,24 +1636,16 @@ app.post('/api/suggestions', async (c) => {
   }
 });
 
-// Update suggestion status (admin only)
 app.put('/api/suggestions/:id', authenticateToken, async (c: any) => {
   try {
     const id = c.req.param('id');
     const { status, adminNotes } = await c.req.json();
-    
-    if (!['pending', 'approved', 'rejected', 'fixed', 'in_progress'].includes(status)) {
-      return c.json({ error: 'Invalid status' }, 400);
-    }
-    
+    if (!['pending', 'approved', 'rejected', 'fixed', 'in_progress'].includes(status)) return c.json({ error: 'Invalid status' }, 400);
     const resolvedAt = status !== 'pending' ? new Date().toISOString() : null;
     const user = c.get('user') as any;
     const resolvedBy = status !== 'pending' ? (user.isAdmin === true ? 'admin' : 'suggestions_admin') : null;
-    
-    await c.env.DB.prepare(`
-      UPDATE suggestions SET status = ?, admin_notes = ?, resolved_at = ?, resolved_by = ? WHERE id = ?
-    `).bind(status, adminNotes || null, resolvedAt, resolvedBy, id).run();
-    
+    await c.env.DB.prepare('UPDATE suggestions SET status = ?, admin_notes = ?, resolved_at = ?, resolved_by = ? WHERE id = ?')
+      .bind(status, adminNotes || null, resolvedAt, resolvedBy, id).run();
     return c.json({ success: true, message: 'Suggestion updated successfully' });
   } catch (error) {
     console.error('Error updating suggestion:', error);
@@ -1610,13 +1653,9 @@ app.put('/api/suggestions/:id', authenticateToken, async (c: any) => {
   }
 });
 
-// Delete suggestion (admin only)
 app.delete('/api/suggestions/:id', authenticateToken, async (c) => {
   try {
-    const id = c.req.param('id');
-    
-    await c.env.DB.prepare('DELETE FROM suggestions WHERE id = ?').bind(id).run();
-    
+    await c.env.DB.prepare('DELETE FROM suggestions WHERE id = ?').bind(c.req.param('id')).run();
     return c.json({ success: true, message: 'Suggestion deleted successfully' });
   } catch (error) {
     console.error('Error deleting suggestion:', error);
@@ -1624,42 +1663,33 @@ app.delete('/api/suggestions/:id', authenticateToken, async (c) => {
   }
 });
 
-// === PLATFORMER LEVELS ROUTES ===
+// ── Platformer Levels CRUD ───────────────────────────
 
 app.get('/api/platformer-levels', async (c) => {
   try {
     const levels = await c.env.DB.prepare(`
-      SELECT
-        id, hkgd_rank as hkgdRank,
-        name, creator, verifier, level_id as levelId, description, thumbnail,
-        song_id as songId, song_name as songName, tags, date_added as dateAdded,
-        pack, difficulty
-      FROM platformer_levels
-      ORDER BY hkgd_rank ASC
+      SELECT id, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId,
+        description, thumbnail, song_id as songId, song_name as songName, tags,
+        date_added as dateAdded, pack, difficulty
+      FROM platformer_levels ORDER BY hkgd_rank ASC
     `).all();
-    
+
     const allRecords = await c.env.DB.prepare(`
-      SELECT id, level_id, player, date, video_url as videoUrl, fps, cbf, attempts
-      FROM platformer_records
-      ORDER BY date DESC
+      SELECT id, level_id, player, date, video_url as videoUrl, fps, cbf, attempts, points
+      FROM platformer_records ORDER BY date DESC
     `).all();
-    
+
     const recordsByLevel: Record<string, any[]> = {};
     for (const r of (allRecords.results || [])) {
-      if (!recordsByLevel[r.level_id as string]) {
-        recordsByLevel[r.level_id as string] = [];
-      }
+      if (!recordsByLevel[r.level_id as string]) recordsByLevel[r.level_id as string] = [];
       recordsByLevel[r.level_id as string].push({ ...r, cbf: r.cbf === 1 });
     }
-    
-    const levelsWithRecords = (levels.results || []).map((level: any) => ({
+
+    return c.json((levels.results || []).map((level: any) => ({
       ...level,
-      songName: level.songName && level.songName !== 'undefined by undefined' ? level.songName : null,
       tags: level.tags ? JSON.parse(level.tags) : [],
-      records: recordsByLevel[level.id] || []
-    }));
-    
-    return c.json(levelsWithRecords);
+      records: recordsByLevel[level.id] || [],
+    })));
   } catch (error) {
     console.error('Error fetching platformer levels:', error);
     return c.json({ error: 'Failed to fetch platformer levels' }, 500);
@@ -1669,30 +1699,23 @@ app.get('/api/platformer-levels', async (c) => {
 app.get('/api/platformer-levels/:id', async (c) => {
   try {
     const level = await c.env.DB.prepare(`
-      SELECT
-        id, hkgd_rank as hkgdRank, pemonlist_rank as pemonlistRank,
-        name, creator, verifier, level_id as levelId, description, thumbnail,
-        song_id as songId, song_name as songName, tags, date_added as dateAdded,
-        pack, difficulty
-      FROM platformer_levels
-      WHERE id = ?
+      SELECT id, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId,
+        description, thumbnail, song_id as songId, song_name as songName, tags,
+        date_added as dateAdded, pack, difficulty
+      FROM platformer_levels WHERE id = ?
     `).bind(c.req.param('id')).first();
-    
-    if (!level) {
-      return c.json({ error: 'Platformer level not found' }, 404);
-    }
-    
+
+    if (!level) return c.json({ error: 'Platformer level not found' }, 404);
+
     const records = await c.env.DB.prepare(`
-      SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts
-      FROM platformer_records
-      WHERE level_id = ?
-      ORDER BY date DESC
+      SELECT id, player, date, video_url as videoUrl, fps, cbf, attempts, points
+      FROM platformer_records WHERE level_id = ? ORDER BY date DESC
     `).bind(c.req.param('id')).all();
-    
+
     return c.json({
       ...level,
       tags: (level.tags as string) ? JSON.parse(level.tags as string) : [],
-      records: (records.results || []).map((r: any) => ({ ...r, cbf: r.cbf === 1 }))
+      records: (records.results || []).map((r: any) => ({ ...r, cbf: r.cbf === 1 })),
     });
   } catch (error) {
     console.error('Error fetching platformer level:', error);
@@ -1703,25 +1726,13 @@ app.get('/api/platformer-levels/:id', async (c) => {
 app.post('/api/platformer-levels', authenticateToken, async (c) => {
   try {
     const data = await c.req.json();
-    const {
-      id, hkgdRank, pemonlistRank, name, creator, verifier, levelId,
-      description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty
-    } = data;
-    
-    const safeBind = (val: any) => val ?? null;
-    
+    const { id, hkgdRank, name, creator, verifier, levelId, description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty } = data;
     await c.env.DB.prepare(`
-      INSERT INTO platformer_levels (
-        id, hkgd_rank, pemonlist_rank, name, creator, verifier, level_id,
-        description, thumbnail, song_id, song_name, tags, date_added, pack, difficulty
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      safeBind(id), safeBind(hkgdRank), safeBind(pemonlistRank),
-      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
-      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
-      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(difficulty)
-    ).run();
-    
+      INSERT INTO platformer_levels (id, hkgd_rank, name, creator, verifier, level_id, description, thumbnail, song_id, song_name, tags, date_added, pack, difficulty)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(safe(id), safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
+      safe(description), safe(thumbnail), safe(songId), safe(songName),
+      JSON.stringify(tags || []), safe(dateAdded), safe(pack), safe(difficulty)).run();
     notifyContentChanged(c.env);
     return c.json({ id, message: 'Platformer level created successfully' }, 201);
   } catch (error) {
@@ -1733,27 +1744,14 @@ app.post('/api/platformer-levels', authenticateToken, async (c) => {
 app.put('/api/platformer-levels/:id', authenticateToken, async (c) => {
   try {
     const data = await c.req.json();
-    const {
-      hkgdRank, pemonlistRank, name, creator, verifier, levelId,
-      description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty
-    } = data;
-    
-    const safeBind = (val: any) => val ?? null;
-    
+    const { hkgdRank, name, creator, verifier, levelId, description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty } = data;
     await c.env.DB.prepare(`
-      UPDATE platformer_levels SET
-        hkgd_rank = ?, pemonlist_rank = ?, name = ?, creator = ?, verifier = ?,
-        level_id = ?, description = ?, thumbnail = ?, song_id = ?, song_name = ?,
-        tags = ?, date_added = ?, pack = ?, difficulty = ?
+      UPDATE platformer_levels SET hkgd_rank = ?, name = ?, creator = ?, verifier = ?, level_id = ?,
+        description = ?, thumbnail = ?, song_id = ?, song_name = ?, tags = ?, date_added = ?, pack = ?, difficulty = ?
       WHERE id = ?
-    `).bind(
-      safeBind(hkgdRank), safeBind(pemonlistRank),
-      safeBind(name), safeBind(creator), safeBind(verifier), safeBind(levelId),
-      safeBind(description), safeBind(thumbnail), safeBind(songId), safeBind(songName),
-      JSON.stringify(tags || []), safeBind(dateAdded), safeBind(pack), safeBind(difficulty),
-      c.req.param('id')
-    ).run();
-    
+    `).bind(safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
+      safe(description), safe(thumbnail), safe(songId), safe(songName),
+      JSON.stringify(tags || []), safe(dateAdded), safe(pack), safe(difficulty), c.req.param('id')).run();
     notifyContentChanged(c.env);
     return c.json({ message: 'Platformer level updated successfully' });
   } catch (error) {
@@ -1773,34 +1771,26 @@ app.delete('/api/platformer-levels/:id', authenticateToken, async (c) => {
   }
 });
 
-// Platformer Records
+// ── Platformer Records ───────────────────────────────
+
 app.post('/api/platformer-levels/:levelId/records', authenticateToken, async (c) => {
   try {
     const body = await c.req.json();
-    const player = body.player;
-    const date = body.date;
-    const videoUrl = body.videoUrl || body.video_url;
-    const fps = body.fps;
-    const cbf = body.cbf;
-    const attempts = body.attempts;
-    
-    const safeBind = (val: any) => val ?? null;
-    
+    let points: number | null = null;
+    const level = await c.env.DB.prepare('SELECT id, hkgd_rank FROM platformer_levels WHERE id = ?').bind(c.req.param('levelId')).first();
+    if (level && (level as any).hkgd_rank) {
+      const totalLevelsResult = await c.env.DB.prepare('SELECT COUNT(*) as count FROM platformer_levels WHERE hkgd_rank IS NOT NULL').first();
+      points = computePoints((level as any).hkgd_rank, (totalLevelsResult as any)?.count || 0);
+    }
+
     const result = await c.env.DB.prepare(`
-      INSERT INTO platformer_records (level_id, player, date, video_url, fps, cbf, attempts)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      c.req.param('levelId'),
-      safeBind(player),
-      safeBind(date),
-      safeBind(videoUrl),
-      safeBind(fps),
-      cbf ? 1 : 0,
-      safeBind(attempts)
-    ).run();
-    
+      INSERT INTO platformer_records (level_id, player, date, video_url, fps, cbf, attempts, points)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(c.req.param('levelId'), safe(body.player), safe(body.date), safe(body.videoUrl || body.video_url),
+      safe(body.fps), body.cbf ? 1 : 0, safe(body.attempts), safe(points)).run();
+
     notifyContentChanged(c.env);
-    return c.json({ message: 'Platformer record added successfully', id: result.meta.last_row_id }, 201);
+    return c.json({ message: 'Platformer record added successfully', id: result.meta.last_row_id, points }, 201);
   } catch (error) {
     console.error('Error adding platformer record:', error);
     return c.json({ error: 'Failed to add platformer record' }, 500);
@@ -1813,35 +1803,13 @@ app.put('/api/platformer-records/:recordId', authenticateToken, async (c) => {
     const recordId = c.req.param('recordId');
     const updates: string[] = [];
     const values: any[] = [];
-    
-    const fields = ['player', 'date', 'video_url', 'fps', 'cbf', 'attempts'];
-    const dataMap: any = {
-      player: data.player,
-      date: data.date,
-      video_url: data.videoUrl,
-      fps: data.fps,
-      cbf: data.cbf ? 1 : 0,
-      attempts: data.attempts
-    };
-    
-    for (const field of fields) {
-      if (dataMap[field] !== undefined) {
-        updates.push(`${field} = ?`);
-        values.push(dataMap[field]);
-      }
-    }
-    
-    if (updates.length === 0) {
-      return c.json({ error: 'No fields to update' }, 400);
-    }
-    
+    const fields = ['player', 'date', 'video_url', 'fps', 'cbf', 'attempts', 'points'];
+    const dataMap: any = { player: data.player, date: data.date, video_url: data.videoUrl, fps: data.fps, cbf: data.cbf ? 1 : 0, attempts: data.attempts, points: data.points };
+    for (const field of fields) { if (dataMap[field] !== undefined) { updates.push(`${field} = ?`); values.push(dataMap[field]); } }
+    if (updates.length === 0) return c.json({ error: 'No fields to update' }, 400);
     values.push(parseInt(recordId));
     const result = await c.env.DB.prepare(`UPDATE platformer_records SET ${updates.join(', ')} WHERE id = ?`).bind(...values).run();
-    
-    if (result.meta.changes === 0) {
-      return c.json({ error: 'Platformer record not found' }, 404);
-    }
-    
+    if (result.meta.changes === 0) return c.json({ error: 'Platformer record not found' }, 404);
     return c.json({ message: 'Platformer record updated successfully' });
   } catch (error) {
     console.error('Error updating platformer record:', error);
@@ -1853,11 +1821,7 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
   try {
     const recordId = parseInt(c.req.param('recordId'));
     const result = await c.env.DB.prepare('DELETE FROM platformer_records WHERE id = ?').bind(recordId).run();
-    
-    if (result.meta.changes === 0) {
-      return c.json({ error: 'Platformer record not found' }, 404);
-    }
-    
+    if (result.meta.changes === 0) return c.json({ error: 'Platformer record not found' }, 404);
     return c.json({ message: 'Platformer record deleted successfully' });
   } catch (error) {
     console.error('Error deleting platformer record:', error);
@@ -1865,48 +1829,152 @@ app.delete('/api/platformer-records/:recordId', authenticateToken, async (c) => 
   }
 });
 
-// === MOTD ROUTES ===
+// ── Platformer Sync Details ──────────────────────────
 
-// Auto-sync MOTD from Discord announcement channel
+app.post('/api/platformer-levels/sync-details', authenticateToken, async (c) => {
+  try {
+    const levels = await c.env.DB.prepare(`
+      SELECT id, level_id, name, creator, verifier, thumbnail, song_id, song_name
+      FROM platformer_levels ORDER BY hkgd_rank ASC LIMIT 30
+    `).all();
+    const updates: any[] = [];
+    for (const level of (levels.results || [])) {
+      try {
+        const response = await fetch(`https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${level.level_id}&limit=1&filter=online_id%3D${level.level_id}`);
+        if (response.ok) {
+          const data = await response.json() as any;
+          const hit = data.hits?.[0];
+          if (hit) {
+            const updatesObj: any = {};
+            if (hit.cache_username && hit.cache_username !== level.creator) updatesObj.creator = hit.cache_username;
+            const newThumbnail = hit.cache_level_string_available ? `https://levelthumbs.prevter.me/thumbnail/${level.level_id}` : null;
+            if (newThumbnail && newThumbnail !== level.thumbnail) updatesObj.thumbnail = newThumbnail;
+            if (hit.cache_song_id && hit.cache_song_id !== level.song_id?.toString()) updatesObj.song_id = hit.cache_song_id.toString();
+            if (Object.keys(updatesObj).length > 0) {
+              const setClause = Object.keys(updatesObj).map(k => `${k} = ?`).join(', ');
+              await c.env.DB.prepare(`UPDATE platformer_levels SET ${setClause} WHERE id = ?`).bind(...Object.values(updatesObj), level.id).run();
+              updates.push({ id: level.id, name: level.name, changes: updatesObj });
+            }
+          }
+        }
+        await new Promise(r => setTimeout(r, 20));
+      } catch (err) { console.error(`Failed to fetch ${level.name}:`, err); }
+    }
+    return c.json({ success: true, message: `Synced details for ${updates.length} platformer levels`, updatedLevels: updates.length, details: updates.slice(0, 10) });
+  } catch (error) {
+    console.error('Platformer level details sync error:', error);
+    return c.json({ error: 'Failed to sync platformer level details', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
+// ── Bulk Import Platformer Levels ────────────────────
+
+app.post('/api/platformer-levels/bulk-import', authenticateToken, async (c) => {
+  try {
+    const levels = await c.req.json();
+    if (!Array.isArray(levels)) return c.json({ error: 'Expected array of levels' }, 400);
+    const results: any[] = [];
+    const errors: string[] = [];
+
+    for (const levelData of levels) {
+      try {
+        const { name, levelId, hkgdRank, creator, records } = levelData;
+        const id = `plat-${levelId}`;
+        const existing = await c.env.DB.prepare('SELECT id FROM platformer_levels WHERE id = ?').bind(id).first();
+        if (existing) { results.push({ name, status: 'skipped', reason: 'already exists' }); continue; }
+
+        let details: any = null;
+        try {
+          const response = await fetch(`https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${levelId}&limit=1&filter=online_id%3D${levelId}`);
+          if (response.ok) details = ((await response.json()) as any).hits?.[0];
+        } catch {}
+
+        await c.env.DB.prepare(`
+          INSERT INTO platformer_levels (id, hkgd_rank, name, creator, verifier, level_id, thumbnail, tags, date_added)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(id, hkgdRank, details?.cache_level_name || name, details?.cache_username || creator || 'Unknown',
+          details?.cache_username || creator || 'Unknown', levelId,
+          details?.cache_level_string_available ? `https://levelthumbs.prevter.me/thumbnail/${levelId}` : null,
+          JSON.stringify(['Platformer']), new Date().toISOString()).run();
+
+        if (records && Array.isArray(records)) {
+          for (const record of records) {
+            await c.env.DB.prepare(`
+              INSERT INTO platformer_records (id, level_id, player, date, video_url, fps, cbf)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).bind(`plat-rec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, id, record.player, record.date, record.videoUrl || null, record.fps || 60, record.cbf || false).run();
+          }
+        }
+        results.push({ name, status: 'added', hkgdRank });
+      } catch (err) { errors.push(`${levelData.name}: ${err instanceof Error ? err.message : 'Unknown error'}`); }
+    }
+    return c.json({ success: true, message: `Imported ${results.filter(r => r.status === 'added').length} levels`, results: results.slice(0, 20), errors: errors.slice(0, 10) });
+  } catch (error) {
+    console.error('Bulk import error:', error);
+    return c.json({ error: 'Failed to bulk import', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
+  }
+});
+
+// ── Platformer Level Sync (AREDL-style, manual trigger) ──
+
+app.post('/api/platformer-levels/sync', authenticateToken, async (c) => {
+  try {
+    const levels = await c.env.DB.prepare('SELECT id, level_id, name, hkgd_rank FROM platformer_levels ORDER BY hkgd_rank ASC').all();
+    let updated = 0;
+    for (const level of (levels.results || [])) {
+      try {
+        const response = await fetch(`https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${level.level_id}&limit=1&filter=online_id%3D${level.level_id}`);
+        if (response.ok) {
+          const data = await response.json() as any;
+          const hit = data.hits?.[0];
+          if (hit) {
+            await c.env.DB.prepare(`UPDATE platformer_levels SET name = ?, creator = ?, verifier = ?, thumbnail = ?, song_id = ?, song_name = ? WHERE id = ?`)
+              .bind(hit.cache_level_name || level.name, hit.cache_username || 'Unknown', hit.cache_username || 'Unknown',
+                hit.cache_level_string_available ? `https://levelthumbs.prevter.me/thumbnail/${level.level_id}` : null,
+                hit.cache_song_id?.toString() || null, null, level.id).run();
+            updated++;
+          }
+        }
+        await new Promise(r => setTimeout(r, 20));
+      } catch {}
+    }
+    return c.json({ success: true, message: `Synced ${updated} platformer levels` });
+  } catch (error) {
+    console.error('Platformer sync error:', error);
+    return c.json({ error: 'Failed to sync platformer levels' }, 500);
+  }
+});
+
+// ── MOTD ─────────────────────────────────────────────
+
 async function syncMotdFromDiscord(env: Bindings): Promise<{ levelId: string; message: string } | null> {
   const botToken = env.DISCORD_BOT_TOKEN;
   const channelId = env.DISCORD_CHANNEL_ID;
   if (!botToken || !channelId) return null;
-
-  const response = await fetch(
-    `https://discord.com/api/v10/channels/${channelId}/messages?limit=1`,
-    { headers: { Authorization: `Bot ${botToken}` } }
-  );
-  if (!response.ok) return null;
-
-  const messages = await response.json() as any[];
-  if (!messages?.length) return null;
-
-  const content = messages[0].content;
-  const match = content.match(/ID:\s*(\d+)/);
-  if (!match) return null;
-
-  const levelId = match[1];
-  return { levelId, message: content };
+  try {
+    const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=1`, {
+      headers: { Authorization: `Bot ${botToken}` },
+    });
+    if (!response.ok) return null;
+    const messages = await response.json() as any[];
+    if (!messages?.length) return null;
+    const content = messages[0].content;
+    const match = content.match(/ID:\s*(\d+)/);
+    if (!match) return null;
+    return { levelId: match[1], message: content };
+  } catch { return null; }
 }
 
 app.post('/api/motd/sync-from-discord', authenticateToken, async (c: any) => {
   try {
     const result = await syncMotdFromDiscord(c.env);
-    if (!result) {
-      return c.json({ error: 'Discord sync failed — check bot token and channel ID' }, 500);
-    }
-
+    if (!result) return c.json({ error: 'Discord sync failed — check bot token and channel ID' }, 500);
     const updatedAt = new Date().toISOString();
     await c.env.DB.prepare(`
       INSERT INTO motd (id, message, updated_at, updated_by)
       VALUES ('main', ?, ?, 'discord-bot')
-      ON CONFLICT(id) DO UPDATE SET
-        message = excluded.message,
-        updated_at = excluded.updated_at,
-        updated_by = excluded.updated_by
+      ON CONFLICT(id) DO UPDATE SET message = excluded.message, updated_at = excluded.updated_at, updated_by = excluded.updated_by
     `).bind(result.message, updatedAt).run();
-
     return c.json({ success: true, levelId: result.levelId });
   } catch (error) {
     console.error('Error syncing MOTD from Discord:', error);
@@ -1918,10 +1986,7 @@ app.get('/api/motd', async (c) => {
   try {
     const motd = await c.env.DB.prepare("SELECT message FROM motd WHERE id = 'main'").first();
     return c.json({ message: motd?.message || '' });
-  } catch (error) {
-    console.error('Error fetching MOTD:', error);
-    return c.json({ message: '' });
-  }
+  } catch { return c.json({ message: '' }); }
 });
 
 app.put('/api/motd', authenticateToken, async (c: any) => {
@@ -1929,32 +1994,27 @@ app.put('/api/motd', authenticateToken, async (c: any) => {
     const { message } = await c.req.json();
     const updatedAt = new Date().toISOString();
     const user = c.get('user') as any;
-    const updatedBy = user?.isAdmin === true ? 'admin' : 'suggestions';
-
     await c.env.DB.prepare(`
       INSERT INTO motd (id, message, updated_at, updated_by)
       VALUES ('main', ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        message = excluded.message,
-        updated_at = excluded.updated_at,
-        updated_by = excluded.updated_by
-    `).bind(message, updatedAt, updatedBy).run();
-
-    return c.json({ message, updatedAt, updatedBy });
+      ON CONFLICT(id) DO UPDATE SET message = excluded.message, updated_at = excluded.updated_at, updated_by = excluded.updated_by
+    `).bind(message, updatedAt, user?.isAdmin === true ? 'admin' : 'suggestions').run();
+    return c.json({ message, updatedAt });
   } catch (error) {
     console.error('Error updating MOTD:', error);
     return c.json({ error: 'Failed to update MOTD' }, 500);
   }
 });
 
-// Health check
+// ── Health ───────────────────────────────────────────
+
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-// Cron scheduled handler - AREDL auto-sync at 12:00 PM GMT+8 daily, MOTD sync at 9:00 AM GMT+8 daily
+// ── Export ───────────────────────────────────────────
+
 export default {
   fetch: app.fetch,
   scheduled: async (controller: any, env: any, ctx: any) => {
-    // MOTD sync from Discord at 01:00 UTC (09:00 GMT+8)
     if (controller.cron === '0 1 * * *') {
       console.log('[Cron] Starting MOTD sync from Discord...');
       const result = await syncMotdFromDiscord(env);
@@ -1963,121 +2023,37 @@ export default {
         await env.DB.prepare(`
           INSERT INTO motd (id, message, updated_at, updated_by)
           VALUES ('main', ?, ?, 'discord-bot')
-          ON CONFLICT(id) DO UPDATE SET
-            message = excluded.message,
-            updated_at = excluded.updated_at,
-            updated_by = excluded.updated_by
+          ON CONFLICT(id) DO UPDATE SET message = excluded.message, updated_at = excluded.updated_at, updated_by = excluded.updated_by
         `).bind(result.levelId, updatedAt).run();
         console.log(`[Cron] MOTD synced to level ID ${result.levelId}`);
-      } else {
-        console.error('[Cron] MOTD sync failed');
-      }
+      } else { console.error('[Cron] MOTD sync failed'); }
       return;
     }
 
-    const response = await fetch(`https://api.aredl.net/v2/api/aredl/levels`);
-    if (!response.ok) {
-      console.error('AREDL sync failed: Failed to fetch AREDL data');
-      return;
-    }
+    const response = await fetch('https://api.aredl.net/v2/api/aredl/levels');
+    if (!response.ok) { console.error('AREDL sync failed'); return; }
     const aredlLevels = await response.json() as any[];
-    
-    const currentLevels = await env.DB.prepare(`
-      SELECT id, name, aredl_rank as aredlRank FROM levels
-    `).all();
-    
+    const currentLevels = await env.DB.prepare('SELECT id, name, aredl_rank as aredlRank FROM levels').all();
     const levelMap = new Map<string, { id: string; name: string; oldRank: number | null }>();
     for (const level of (currentLevels.results || [])) {
-      levelMap.set((level as any).name.toLowerCase().trim(), {
-        id: (level as any).id,
-        name: (level as any).name,
-        oldRank: (level as any).aredlRank
-      });
+      levelMap.set((level as any).name.toLowerCase().trim(), { id: (level as any).id, name: (level as any).name, oldRank: (level as any).aredlRank });
     }
-    
     const aredlDataMap = new Map<string, any>();
-    for (const aredlLevel of aredlLevels) {
-      const name = aredlLevel.name?.toLowerCase().trim();
-      if (name) {
-        aredlDataMap.set(name, aredlLevel);
-      }
-    }
-    
+    for (const aredlLevel of aredlLevels) { const n = aredlLevel.name?.toLowerCase().trim(); if (n) aredlDataMap.set(n, aredlLevel); }
     let updatedCount = 0;
     for (const [name, levelInfo] of levelMap) {
       const aredlData = aredlDataMap.get(name);
       if (aredlData) {
-        const newRank = aredlData.position || aredlData.rank;
-        const edelEnjoyment = aredlData.edel_enjoyment ?? null;
-        const nlwTier = aredlData.nlw_tier ?? null;
-        const gddlTier = aredlData.gddl_tier ?? null;
-        
-        await env.DB.prepare(`
-          UPDATE levels SET aredl_rank = ?, edel_enjoyment = ?, nlw_tier = ?, gddl_tier = ? WHERE id = ?
-        `).bind(newRank, edelEnjoyment, nlwTier, gddlTier, levelInfo.id).run();
+        await env.DB.prepare('UPDATE levels SET aredl_rank = ?, edel_enjoyment = ?, nlw_tier = ?, gddl_tier = ? WHERE id = ?')
+          .bind(aredlData.position || aredlData.rank, aredlData.edel_enjoyment ?? null, aredlData.nlw_tier ?? null, aredlData.gddl_tier ?? null, levelInfo.id).run();
         updatedCount++;
       }
     }
-    
-    const sortedLevels = await env.DB.prepare(`
-      SELECT id FROM levels WHERE aredl_rank IS NOT NULL ORDER BY aredl_rank ASC
-    `).all();
-    
+    const sortedLevels = await env.DB.prepare('SELECT id FROM levels WHERE aredl_rank IS NOT NULL ORDER BY aredl_rank ASC').all();
     let hkgdRank = 1;
-    for (const level of (sortedLevels.results || [])) {
-      await env.DB.prepare(`UPDATE levels SET hkgd_rank = ? WHERE id = ?`).bind(hkgdRank, (level as any).id).run();
-      hkgdRank++;
-    }
-    
-    const unrankedLevels = await env.DB.prepare(`
-      SELECT id FROM levels WHERE aredl_rank IS NULL ORDER BY hkgd_rank ASC
-    `).all();
-    
-    for (const level of (unrankedLevels.results || [])) {
-      await env.DB.prepare(`UPDATE levels SET hkgd_rank = ? WHERE id = ?`).bind(hkgdRank, (level as any).id).run();
-      hkgdRank++;
-    }
-    
-    const today = new Date();
-    const dateStr = `${today.getFullYear().toString().slice(-2)}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
-    
-    await env.DB.prepare(`
-      INSERT INTO changelog (id, date, level_name, level_id, change_type, description, list_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      `sync-${Date.now()}`,
-      dateStr,
-      'AREDL Sync',
-      'system',
-      'sync',
-      `Auto-sync: Updated ${updatedCount} level rankings.`,
-      'classic'
-    ).run();
-    
-    if (updatedCount > 0 && env.INDEXNOW_KEY) {
-      const hostname = env.SITE_HOSTNAME || 'hkgdl.dpdns.org';
-      const siteUrls = [`https://${hostname}/`];
-      
-      const payload = {
-        host: hostname,
-        key: env.INDEXNOW_KEY,
-        urlList: siteUrls
-      };
-
-      for (const engine of ['https://www.bing.com/indexnow']) {
-        try {
-          await fetch(engine, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json; charset=utf-8' },
-            body: JSON.stringify(payload)
-          });
-          console.log(`[Cron IndexNow] Submitted homepage to ${engine}`);
-        } catch (err) {
-          console.error('[Cron IndexNow] Error:', err);
-        }
-      }
-    }
-    
+    for (const level of (sortedLevels.results || [])) { await env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run(); hkgdRank++; }
+    const unrankedLevels = await env.DB.prepare('SELECT id FROM levels WHERE aredl_rank IS NULL ORDER BY hkgd_rank ASC').all();
+    for (const level of (unrankedLevels.results || [])) { await env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run(); hkgdRank++; }
     console.log(`AREDL auto-sync completed: ${updatedCount} levels updated`);
   }
 };
