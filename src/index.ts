@@ -36,6 +36,7 @@ app.use('*', cors({
       'http://localhost:4173',
       'https://hkgd-website-frontend.hkgdl.workers.dev',
       'https://hkgdl-frontend-v2.pages.dev',
+      'https://hkgd-v2.hkgdl.workers.dev',
       'https://v2.hkgdl.dpdns.org',
     ];
     if (!origin || allowed.some(a => origin.startsWith(a) || origin === a)) return origin;
