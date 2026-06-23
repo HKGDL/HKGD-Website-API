@@ -2476,6 +2476,50 @@ app.put('/api/motd', authenticateToken, async (c: any) => {
 
 app.get('/api/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+// ── Fix Song Names ───────────────────────────────────
+
+app.post('/api/admin/fix-song-names', authenticateToken, async (c: any) => {
+  try {
+    const { batchSize = 10 } = await c.req.json().catch(() => ({}));
+    const missing = await c.env.DB.prepare(
+      `SELECT id, level_id, name FROM levels WHERE song_name = 'Newgrounds' LIMIT ?`
+    ).bind(batchSize).all();
+    const levels = missing.results || [];
+    if (levels.length === 0) return c.json({ done: true, fixed: 0, remaining: 0 });
+
+    let fixed = 0;
+    const results: any[] = [];
+    for (const level of levels) {
+      try {
+        const gdb = await fetch(`https://gdbrowser.com/api/level/${level.level_id}`);
+        if (gdb.ok) {
+          const data = await gdb.json() as any;
+          if (data.songName) {
+            await c.env.DB.prepare('UPDATE levels SET song_name = ? WHERE id = ?').bind(data.songName, level.id).run();
+            fixed++;
+            results.push({ name: level.name, songName: data.songName, status: 'ok' });
+          } else {
+            results.push({ name: level.name, status: 'no song name in response' });
+          }
+        } else {
+          results.push({ name: level.name, status: `gdbrowser ${gdb.status}` });
+        }
+      } catch (err) {
+        results.push({ name: level.name, status: String(err) });
+      }
+    }
+
+    const totalRemaining = await c.env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM levels WHERE song_name = 'Newgrounds'`
+    ).first() as any;
+
+    return c.json({ done: false, fixed, total: fixed + (totalRemaining?.cnt || 0), remaining: totalRemaining?.cnt || 0, results });
+  } catch (error) {
+    console.error('Fix song names error:', error);
+    return c.json({ error: 'Failed' }, 500);
+  }
+});
+
 // ── Export ───────────────────────────────────────────
 
 export default {
