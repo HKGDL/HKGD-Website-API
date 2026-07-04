@@ -11,6 +11,7 @@
     "db:seed": "wrangler d1 execute hkgd-db --remote --file=./seed.sql"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.8.0",
     "hono": "^4.6.0",
     "jose": "^5.9.0",
