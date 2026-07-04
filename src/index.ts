@@ -55,7 +55,7 @@ app.use('*', async (c, next) => {
 app.get('/api', (c) => {
   return c.json({
     name: 'HKGD API',
-    version: '1.0.0',
+    version: '0.9.0',
     endpoints: {
       levels: '/api/levels',
       platformer: '/api/platformer-levels',
