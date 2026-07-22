@@ -96,14 +96,15 @@ export function registerSyncRoutes(app: Hono<{ Bindings: Bindings }>) {
           const date = row[base]?.toString().trim();
           const player = row[base + 1]?.toString().trim();
           if (!date || !player) continue;
-          if (!/^\d{4}[\/\-]\d{2}[\/\-]\d{2}$/.test(date)) continue;
+          const normalizedDate = /^\d{2}[\/\-]\d{2}[\/\-]\d{2}$/.test(date) ? `20${date}` : date;
+          if (!/^\d{4}[\/\-]\d{2}[\/\-]\d{2}$/.test(normalizedDate)) continue;
           const video = (base + 2 < row.length) ? row[base + 2]?.toString().trim() : '';
           const fpsRaw = (base + 3 < row.length) ? row[base + 3]?.toString().trim() : '';
-          if (!existingRecordSet.has(`${dbId}|${player.toLowerCase()}|${date}`)) {
+          if (!existingRecordSet.has(`${dbId}|${player.toLowerCase()}|${normalizedDate}`)) {
             const fps = fpsRaw && fpsRaw !== '/' ? parseInt(fpsRaw.replace(/[^0-9]/g, '')) || null : null;
             const videoUrl = video && video !== '/' && video.length > 0 ? video : null;
-            recordsToInsert.push({ levelId: dbId, player, date, videoUrl, fps });
-            existingRecordSet.add(`${dbId}|${player.toLowerCase()}|${date}`);
+            recordsToInsert.push({ levelId: dbId, player, date: normalizedDate, videoUrl, fps });
+            existingRecordSet.add(`${dbId}|${player.toLowerCase()}|${normalizedDate}`);
             addedRecords++;
           }
         }
