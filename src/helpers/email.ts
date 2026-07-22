@@ -9,13 +9,10 @@ async function sendEmail(apiKey: string, to: string, subject: string, html: stri
   } catch { return false; }
 }
 
-export async function sendPasswordResetEmail(apiKey: string, to: string, resetUrl: string): Promise<boolean> {
+export async function sendPasswordResetEmail(apiKey: string, to: string, resetUrl: string, username?: string): Promise<boolean> {
   const subject = 'Reset Your HKGD Account Password';
-  const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
-    <h2 style="color:#e74c3c">HKGD Demon List</h2>
-    <p>You requested a password reset. Click the button below — this link expires in 5 minutes.</p>
-    <a href="${resetUrl}" style="display:inline-block;padding:12px 24px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:6px;margin:16px 0">Reset Password</a>
-    <p style="color:#888;font-size:13px">If you didn't request this, ignore this email.</p></div>`;
-  const text = `Reset your HKGD password: ${resetUrl}\n\nThis link expires in 5 minutes.`;
+  const name = username || 'there';
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head><body style="margin:0;padding:0;background-color:#f4f4f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"><table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7"><tr><td align="center" style="padding:40px 20px"><table width="100%" style="max-width:560px" cellpadding="0" cellspacing="0"><tr><td style="text-align:center;padding:0 0 20px;font-size:20px;font-weight:700;color:#a8aaaf">HKGD Demon List</td></tr><tr><td style="background-color:#fff;border-radius:8px;padding:40px 30px"><h1 style="margin:0 0 16px;font-size:22px;color:#333">Hi ${name},</h1><p style="margin:0 0 24px;font-size:16px;line-height:1.5;color:#51545e">We received a request to reset the password for your HKGD Demon List account. Click the button below to set a new password.</p><p style="margin:0 0 24px;font-size:14px;line-height:1.5;color:#51545e"><strong>This link expires in 5 minutes.</strong></p><table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:12px 0 24px"><a href="${resetUrl}" style="display:inline-block;padding:14px 32px;background-color:#3869d4;color:#fff;text-decoration:none;border-radius:6px;font-size:16px;font-weight:600">Reset Password</a></td></tr></table><p style="margin:0;font-size:14px;line-height:1.5;color:#6b6b76">If you didn't request this, you can safely ignore this email. Your password won't change until you click the link above and create a new one.</p></td></tr><tr><td style="text-align:center;padding:24px 0 0;font-size:12px;color:#a8aaaf">&copy; HKGD Demon List</td></tr></table></td></tr></table></body></html>`;
+  const text = `Hi ${name},\n\nWe received a request to reset the password for your HKGD Demon List account.\n\nReset your password: ${resetUrl}\n\nThis link expires in 5 minutes.\n\nIf you didn't request this, you can safely ignore this email.`;
   return sendEmail(apiKey, to, subject, html, text);
 }
