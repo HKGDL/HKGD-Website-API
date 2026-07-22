@@ -3,16 +3,18 @@ export const BAN_DURATION = 15 * 60 * 1000;
 export const SQL_INJECTION_BAN_DURATION = 24 * 60 * 60 * 1000;
 
 const SQL_INJECTION_PATTERNS = [
-  /['"]\s*(?:OR|AND)\s+['"]\d+['"]\s*=\s*['"]\d+['"]/i,
-  /['"]\s*(?:OR|AND)\s+['"]\s*=\s*['"]/i,
-  /;\s*(?:DROP|DELETE|INSERT|UPDATE|SELECT|ALTER)\b/i,
-  /\bUNION\s+(?:ALL\s+)?SELECT\b/i,
-  /\bDROP\s+TABLE\b/i,
+  /['"]\s*(?:or|and)\s+['"]/i,
+  /['"]\s*(?:or|and)\s+\d/i,
+  /\bor\b\s+\d+\s*=\s*\d+/i,
+  /\band\b\s+\d+\s*=\s*\d+/i,
+  /;\s*(?:drop|delete|insert|update|select|alter)\b/i,
+  /\bunion\s+(?:all\s+)?select\b/i,
+  /\bdrop\s+table\b/i,
   /--\s*$/,
   /\/\*[\s\S]+\*\//,
-  /\bSLEEP\s*\(\s*\d+\s*\)/i,
-  /\bBENCHMARK\s*\(\s*\d+/i,
-  /\bWAITFOR\s+DELAY\b/i,
+  /\bsleep\s*\(/i,
+  /\bbenchmark\s*\(/i,
+  /\bwaitfor\s+delay\b/i,
 ];
 
 export function detectSqlInjection(value: string): boolean {
