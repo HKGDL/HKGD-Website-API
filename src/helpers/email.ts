@@ -3,7 +3,7 @@ async function sendEmail(apiKey: string, to: string, subject: string, html: stri
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: 'HKGD Demon List <noreply@hkgdl.dpdns.org>', to: [to], subject, html, text }),
+      body: JSON.stringify({ from: 'HKGD Demon List <hello@hkgdl.dpdns.org>', to: [to], subject, html, text }),
     });
     return res.ok;
   } catch { return false; }
