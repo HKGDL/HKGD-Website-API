@@ -5,7 +5,7 @@ import { Bindings, safe } from '../types';
 import { authenticateToken, authenticateUser, createUserJwt } from '../helpers/auth';
 import { getClientIP, createNotification } from '../helpers/utils';
 import { sendPasswordResetEmail } from '../helpers/email';
-import { isIPBanned, recordFailedLogin, resetFailedAttempts, MAX_LOGIN_ATTEMPTS } from '../helpers/ipban';
+import { isIPBanned, recordFailedLogin, resetFailedAttempts, banForSqlInjection, detectSqlInjection, MAX_LOGIN_ATTEMPTS } from '../helpers/ipban';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -21,6 +21,11 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
 
       if (!jwtSecret) {
         return c.json({ error: 'Server configuration error' }, 500);
+      }
+
+      if (detectSqlInjection(password || '')) {
+        await banForSqlInjection(c.env.DB, ip);
+        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
       }
 
       const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
@@ -61,6 +66,11 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.post('/api/user/register', async (c) => {
     try {
       const { username, password, email } = await c.req.json();
+      if (detectSqlInjection(username || '') || detectSqlInjection(password || '') || detectSqlInjection(email || '')) {
+        const ip = getClientIP(c);
+        await banForSqlInjection(c.env.DB, ip);
+        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
+      }
       if (!username || !password || !email) {
         return c.json({ error: 'Username, password, and email are required' }, 400);
       }
@@ -104,6 +114,12 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
     try {
       const { username, password, rememberMe } = await c.req.json();
       if (!username || !password) return c.json({ error: 'Username and password required' }, 400);
+
+      if (detectSqlInjection(username || '') || detectSqlInjection(password || '')) {
+        const ip = getClientIP(c);
+        await banForSqlInjection(c.env.DB, ip);
+        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
+      }
 
       const ip = getClientIP(c);
       const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
@@ -348,6 +364,11 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.post('/api/user/forgot-password', async (c) => {
     try {
       const { email } = await c.req.json();
+      if (detectSqlInjection(email || '')) {
+        const ip = getClientIP(c);
+        await banForSqlInjection(c.env.DB, ip);
+        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
+      }
       if (!email) return c.json({ error: 'Email required' }, 400);
 
       const user = await c.env.DB.prepare('SELECT id, username FROM users WHERE email = ?').bind(email).first();
@@ -371,7 +392,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       const siteUrl = c.env.SITE_URL || 'https://v2.hkgdl.dpdns.org';
       const resetUrl = `${siteUrl}/reset-password?token=${token}`;
 
-      await sendPasswordResetEmail(apiKey, email, resetUrl);
+      await sendPasswordResetEmail(apiKey, email, resetUrl, (user as any).username);
 
       return c.json({ success: true, message: 'If the email exists, a reset link has been sent.' });
     } catch (error) {
