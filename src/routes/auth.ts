@@ -5,9 +5,17 @@ import { Bindings, safe } from '../types';
 import { authenticateToken, authenticateUser, createUserJwt } from '../helpers/auth';
 import { getClientIP, createNotification } from '../helpers/utils';
 import { sendPasswordResetEmail } from '../helpers/email';
-import { isIPBanned, recordFailedLogin, resetFailedAttempts, banForSqlInjection, detectSqlInjection, MAX_LOGIN_ATTEMPTS } from '../helpers/ipban';
+import { isIPBanned, recordFailedLogin, resetFailedAttempts, banForSqlInjection, detectSqlInjection, SQL_INJECTION_BAN_DURATION, MAX_LOGIN_ATTEMPTS } from '../helpers/ipban';
 
 const BCRYPT_ROUNDS = 10;
+
+function formatBanDuration(ms: number): string {
+  const hours = Math.floor(ms / (60 * 60 * 1000));
+  const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+  if (hours > 0 && minutes > 0) return `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} min${minutes !== 1 ? 's' : ''}`;
+  if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''}`;
+  return `${minutes} min${minutes !== 1 ? 's' : ''}`;
+}
 
 export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
   // ── Admin Auth ───────────────────────────────────────
@@ -25,7 +33,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
 
       if (detectSqlInjection(password || '')) {
         await banForSqlInjection(c.env.DB, ip);
-        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
+        return c.json({ error: 'Nice try', message: `Bro just really think i will let you inject sql enjoy the 1day ban LMAO. IP Banned for ${formatBanDuration(SQL_INJECTION_BAN_DURATION)}` }, 403);
       }
 
       const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
@@ -69,7 +77,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       if (detectSqlInjection(username || '') || detectSqlInjection(password || '') || detectSqlInjection(email || '')) {
         const ip = getClientIP(c);
         await banForSqlInjection(c.env.DB, ip);
-        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
+        return c.json({ error: 'Nice try', message: `Bro just really think i will let you inject sql enjoy the 1day ban LMAO. IP Banned for ${formatBanDuration(SQL_INJECTION_BAN_DURATION)}` }, 403);
       }
       if (!username || !password || !email) {
         return c.json({ error: 'Username, password, and email are required' }, 400);
@@ -118,7 +126,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       if (detectSqlInjection(username || '') || detectSqlInjection(password || '')) {
         const ip = getClientIP(c);
         await banForSqlInjection(c.env.DB, ip);
-        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
+        return c.json({ error: 'Nice try', message: `Bro just really think i will let you inject sql enjoy the 1day ban LMAO. IP Banned for ${formatBanDuration(SQL_INJECTION_BAN_DURATION)}` }, 403);
       }
 
       const ip = getClientIP(c);
@@ -367,7 +375,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       if (detectSqlInjection(email || '')) {
         const ip = getClientIP(c);
         await banForSqlInjection(c.env.DB, ip);
-        return c.json({ error: 'Nice try', message: 'Bro just really think i will let you inject sql enjoy the 1day ban LMAO' }, 403);
+        return c.json({ error: 'Nice try', message: `Bro just really think i will let you inject sql enjoy the 1day ban LMAO. IP Banned for ${formatBanDuration(SQL_INJECTION_BAN_DURATION)}` }, 403);
       }
       if (!email) return c.json({ error: 'Email required' }, 400);
 

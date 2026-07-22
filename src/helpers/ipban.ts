@@ -3,32 +3,28 @@ export const BAN_DURATION = 15 * 60 * 1000;
 export const SQL_INJECTION_BAN_DURATION = 24 * 60 * 60 * 1000;
 
 const SQL_INJECTION_PATTERNS = [
-  /(\bOR\b\s+['"]?\d+['"]?\s*=\s*['"]?\d+['"]?)/i,
-  /(\bAND\b\s+['"]?\d+['"]?\s*=\s*['"]?\d+['"]?)/i,
-  /(['"])\s*(OR|AND)\s+['"]?\1\s*=\s*\1/i,
-  /(\bUNION\b\s+\bSELECT\b)/i,
-  /(\bDROP\b\s+\bTABLE\b)/i,
-  /(\bINSERT\b\s+\bINTO\b)/i,
-  /(\bDELETE\b\s+\bFROM\b)/i,
-  /(\bUPDATE\b\s+\w+\s+\bSET\b)/i,
-  /(['"])\s*;\s*(DROP|DELETE|INSERT|UPDATE|SELECT|ALTER)/i,
+  /['"]\s*(?:OR|AND)\s+['"]\d+['"]\s*=\s*['"]\d+['"]/i,
+  /['"]\s*(?:OR|AND)\s+['"]\s*=\s*['"]/i,
+  /;\s*(?:DROP|DELETE|INSERT|UPDATE|SELECT|ALTER)\b/i,
+  /\bUNION\s+(?:ALL\s+)?SELECT\b/i,
+  /\bDROP\s+TABLE\b/i,
   /--\s*$/,
-  /\/\*[\s\S]*\*\//,
-  /(\bSLEEP\b\s*\()/i,
-  /(\bBENCHMARK\b\s*\()/i,
-  /['"]\s*;\s*['"]\s*=\s*['"]/i,
-  /(0x[0-9a-fA-F]+)/,
-  /(\bCONCAT\b\s*\()/i,
-  /(CHAR\s*\(\s*\d+)/i,
+  /\/\*[\s\S]+\*\//,
+  /\bSLEEP\s*\(\s*\d+\s*\)/i,
+  /\bBENCHMARK\s*\(\s*\d+/i,
+  /\bWAITFOR\s+DELAY\b/i,
 ];
 
 export function detectSqlInjection(value: string): boolean {
   if (!value) return false;
-  const decoded = decodeURIComponent(value);
-  const inputs = [value, decoded];
-  for (const input of inputs) {
+  try {
+    const decoded = decodeURIComponent(value);
     for (const pattern of SQL_INJECTION_PATTERNS) {
-      if (pattern.test(input)) return true;
+      if (pattern.test(value) || pattern.test(decoded)) return true;
+    }
+  } catch {
+    for (const pattern of SQL_INJECTION_PATTERNS) {
+      if (pattern.test(value)) return true;
     }
   }
   return false;
