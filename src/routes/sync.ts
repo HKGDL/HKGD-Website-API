@@ -66,6 +66,8 @@ export function registerSyncRoutes(app: Hono<{ Bindings: Bindings }>) {
       const levelsToInsert: any[] = [];
       const recordsToInsert: any[] = [];
 
+      const rankUpdates: { gameId: string; hkgdRank: number; aredlRank: number | null }[] = [];
+
       for (const row of rows.slice(1)) {
         if (row.length < 5) continue;
         const placement = row[0]?.toString().trim();
@@ -74,14 +76,17 @@ export function registerSyncRoutes(app: Hono<{ Bindings: Bindings }>) {
         if (!gameId || !levelName) continue;
         const victorsRaw = row[4]?.toString().trim();
         if (!victorsRaw || !/^\d+$/.test(victorsRaw) || parseInt(victorsRaw, 10) < 1) continue;
-        if (existingNames.has(levelName.toLowerCase())) continue;
 
         const aredlRank = placement && !isNaN(Number(placement)) ? parseInt(placement) : null;
         const existing = levelByGameId.get(gameId);
         const dbId = existing ? (existing as any).id : gameId;
 
-        if (!existing) {
-          levelsToInsert.push({ id: gameId, gameId, name: levelName, aredlRank });
+        if (existing) {
+          if (aredlRank !== null) {
+            rankUpdates.push({ gameId, hkgdRank: aredlRank, aredlRank });
+          }
+        } else if (!existingNames.has(levelName.toLowerCase())) {
+          levelsToInsert.push({ id: gameId, gameId, name: levelName, aredlRank, hkgdRank: aredlRank });
           addedLevels++;
         }
 
@@ -105,9 +110,19 @@ export function registerSyncRoutes(app: Hono<{ Bindings: Bindings }>) {
 
       const insertStmts = levelsToInsert.map(l => c.env.DB.prepare(`
         INSERT OR IGNORE INTO levels (id, hkgd_rank, aredl_rank, name, creator, verifier, level_id, tags, date_added)
-        VALUES (?, 0, ?, ?, '', '', ?, ?, ?)
-      `).bind(l.id, l.aredlRank, l.name, l.gameId, JSON.stringify(l.aredlRank ? ['Overall'] : []), now));
+        VALUES (?, ?, ?, ?, '', '', ?, ?, ?)
+      `).bind(l.id, l.hkgdRank || 0, l.aredlRank, l.name, l.gameId, JSON.stringify(l.aredlRank ? ['Overall'] : []), now));
       if (insertStmts.length) await c.env.DB.batch(insertStmts);
+
+      let updatedRanks = 0;
+      if (rankUpdates.length) {
+        const rankStmts = rankUpdates.map(r => c.env.DB.prepare(`
+          UPDATE levels SET hkgd_rank = ?, aredl_rank = ? WHERE level_id = ?
+        `).bind(r.hkgdRank, r.aredlRank, r.gameId));
+        for (let i = 0; i < rankStmts.length; i += 80) {
+          try { await c.env.DB.batch(rankStmts.slice(i, i + 80)); updatedRanks += Math.min(80, rankStmts.length - i); } catch {}
+        }
+      }
 
       const BATCH_SIZE = 80;
       for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
@@ -132,9 +147,9 @@ export function registerSyncRoutes(app: Hono<{ Bindings: Bindings }>) {
         INSERT INTO changelog (id, date, level_name, level_id, change_type, description, list_type)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).bind(`gsheet-${Date.now()}`, dateStr, 'Google Sheets Sync', 'system', 'sync',
-        `Added ${addedLevels} levels · Added ${addedRecords} records`, 'classic').run();
+        `Added ${addedLevels} levels · Added ${addedRecords} records · Updated ${updatedRanks} ranks`, 'classic').run();
 
-      return c.json({ success: true, message: `Synced: ${addedLevels} levels, ${addedRecords} records`, addedLevels, addedRecords });
+      return c.json({ success: true, message: `Synced: ${addedLevels} levels, ${addedRecords} records, ${updatedRanks} ranks updated`, addedLevels, addedRecords, updatedRanks });
     } catch (error) {
       console.error('Google Sheets sync error:', error);
       return c.json({ error: 'Sync failed', details: error instanceof Error ? error.message : String(error) }, 500);
