@@ -38,7 +38,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
 
       const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
       if (banned) {
-        return c.json({ error: 'IP banned', message: `IP Banned for ${formatBanDuration(remainingTime! * 1000)}. Try again later.`, remainingTime }, 403);
+        return c.json({ error: `IP Banned for ${formatBanDuration(remainingTime! * 1000)}. Try again later.`, remainingTime }, 403);
       }
 
       let role: any = null;
@@ -132,7 +132,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       const ip = getClientIP(c);
       const { banned, remainingTime } = await isIPBanned(c.env.DB, ip);
       if (banned) {
-        return c.json({ error: 'IP banned', message: `IP Banned for ${formatBanDuration(remainingTime! * 1000)}. Try again later.` }, 403);
+        return c.json({ error: `IP Banned for ${formatBanDuration(remainingTime! * 1000)}. Try again later.` }, 403);
       }
 
       const user = await c.env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
