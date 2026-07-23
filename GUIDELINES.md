@@ -25,6 +25,8 @@ After creating an account, you **must** claim your player profile to sync your d
 
 ## 2. Record Requirements
 
+TL:DR : FOLLOW THE AREDL REQUIRMENTS.IF YOUR VIDEO IS ALREADY ACCEPTED IN AREDL THEN IGNORE EVERYTHING BELOW :D
+
 ### 2.1 Video
 
 - You **must** record and upload a video of your completion to a supported video platform
@@ -185,29 +187,6 @@ When you submit a record, it will be in one of the following states:
 | **Under Review** | Record is being evaluated by staff |
 
 If your record is rejected, you may fix the issues and resubmit.
-
----
-
-## 10. Frequently Asked Questions
-
-**Q: Can I submit a record for a level not on the list?**
-A: No. Only levels currently on HKGDL accept record submissions.
-
-**Q: Can I submit a completion that was done before HKGDL existed?**
-A: Yes, as long as the level is currently on the list and your video meets all requirements.
-
-**Q: Can I use a mobile device to record?**
-A: Yes, but your video must clearly show the end screen stats and have audible clicks. We recommend using a second device to record your clicks.
-
-**Q: How long does record review take?**
-A: Typically 1–7 days depending on staff availability and submission volume.
-
-**Q: Can I delete my video after my record is accepted?**
-A: No. Completion videos must remain publicly accessible. You may delete raw footage after review.
-
-**Q: My video was deleted — what happens?**
-A: If your completion video is deleted, your record may be removed from the list. Keep your videos accessible.
-
 ---
 
 *These guidelines are based on the [AREDL Guidelines](https://aredl.net/guidelines/) and adapted for HKGD Demon List. For questions, contact an admin on the HKGD Discord server.*
