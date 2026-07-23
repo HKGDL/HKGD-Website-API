@@ -73,8 +73,8 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
 
   app.post('/api/user/register', async (c) => {
     try {
-      const { username, password, email } = await c.req.json();
-      if (detectSqlInjection(username || '') || detectSqlInjection(password || '') || detectSqlInjection(email || '')) {
+      const { username, password, email, displayName } = await c.req.json();
+      if (detectSqlInjection(username || '') || detectSqlInjection(password || '') || detectSqlInjection(email || '') || detectSqlInjection(displayName || '')) {
         const ip = getClientIP(c);
         await banForSqlInjection(c.env.DB, ip);
         return c.json({ error: `Bro just really think i will let you inject sql enjoy the 1day ban LMAO. IP Banned for ${formatBanDuration(SQL_INJECTION_BAN_DURATION)}` }, 403);
@@ -104,12 +104,12 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
       await c.env.DB.prepare(`
-        INSERT INTO users (id, username, password, email, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(id, username, hashedPassword, email, now, now).run();
+        INSERT INTO users (id, username, password, email, display_name, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(id, username, hashedPassword, email, displayName || username, now, now).run();
 
       const token = await createUserJwt({ id, username }, c.env.JWT_SECRET);
-      return c.json({ success: true, token, user: { id, username, email } }, 201);
+      return c.json({ success: true, token, user: { id, username, email, displayName: displayName || username } }, 201);
     } catch (error) {
       console.error('Register error:', error);
       return c.json({ error: 'Registration failed' }, 500);
