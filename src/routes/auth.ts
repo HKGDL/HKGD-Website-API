@@ -510,6 +510,13 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       const { playerName } = await c.req.json();
       if (!playerName) return c.json({ error: 'playerName required' }, 400);
 
+      const existingClaim = await c.env.DB.prepare(
+        `SELECT id, user_id, status FROM claims WHERE LOWER(player_name) = LOWER(?) AND player_name IS NOT NULL AND player_name != ''`
+      ).bind(playerName).first();
+      if (existingClaim && (existingClaim as any).user_id !== userId) {
+        return c.json({ error: 'This name is already claimed! Contact Admin for help.' }, 409);
+      }
+
       const id = `claim-${crypto.randomUUID()}`;
       const now = new Date().toISOString();
 
