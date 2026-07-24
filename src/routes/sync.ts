@@ -17,7 +17,56 @@ export function registerSyncRoutes(app: Hono<{ Bindings: Bindings }>) {
 
   app.post('/api/aredl-sync', authenticateToken, async (c: any) => {
     try {
-      const updatedCount = await syncAredlRankings(c.env);
+      const body = await c.req.json().catch(() => ({}));
+      let aredlLevels: any[] = body.aredlLevels;
+
+      if (!aredlLevels || !aredlLevels.length) {
+        return c.json({ error: 'No AREDL data provided. The browser must fetch AREDL data and send it here.' }, 400);
+      }
+
+      const currentLevels = await c.env.DB.prepare('SELECT id, name, aredl_rank as aredlRank FROM levels').all();
+      const levelMap = new Map<string, { id: string; name: string; oldRank: number | null }>();
+      for (const level of (currentLevels.results || [])) {
+        levelMap.set((level as any).name.toLowerCase().trim(), {
+          id: (level as any).id, name: (level as any).name, oldRank: (level as any).aredlRank,
+        });
+      }
+
+      const aredlDataMap = new Map<string, any>();
+      for (const aredlLevel of aredlLevels) {
+        const name = aredlLevel.name?.toLowerCase().trim();
+        if (name) aredlDataMap.set(name, aredlLevel);
+      }
+
+      let updatedCount = 0;
+      for (const [name, levelInfo] of levelMap) {
+        const aredlData = aredlDataMap.get(name);
+        if (aredlData) {
+          await c.env.DB.prepare(`
+            UPDATE levels SET aredl_rank = ?, edel_enjoyment = ?, nlw_tier = ?, gddl_tier = ? WHERE id = ?
+          `).bind(aredlData.position || aredlData.rank, aredlData.edel_enjoyment ?? null, aredlData.nlw_tier ?? null, aredlData.gddl_tier ?? null, levelInfo.id).run();
+          updatedCount++;
+        }
+      }
+
+      const sortedLevels = await c.env.DB.prepare(
+        'SELECT id FROM levels WHERE aredl_rank IS NOT NULL AND (hidden IS NULL OR hidden != 1) ORDER BY aredl_rank ASC'
+      ).all();
+      let hkgdRank = 1;
+      for (const level of (sortedLevels.results || [])) {
+        await c.env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run();
+        hkgdRank++;
+      }
+
+      const unrankedLevels = await c.env.DB.prepare(
+        'SELECT id FROM levels WHERE aredl_rank IS NULL AND (hidden IS NULL OR hidden != 1) ORDER BY hkgd_rank ASC'
+      ).all();
+      for (const level of (unrankedLevels.results || [])) {
+        await c.env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run();
+        hkgdRank++;
+      }
+
+      await c.env.DB.prepare('UPDATE levels SET hkgd_rank = 0 WHERE hidden = 1').run();
 
       const today = new Date();
       const dateStr = `${today.getFullYear().toString().slice(-2)}/${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}`;
