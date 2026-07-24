@@ -207,7 +207,14 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.put('/api/user/profile', authenticateUser, async (c: any) => {
     try {
       const { userId } = c.get('user');
-      const { displayName, playerName, email } = await c.req.json();
+      const body = await c.req.json();
+
+      const current = await c.env.DB.prepare('SELECT display_name, player_name, email FROM users WHERE id = ?').bind(userId).first() as any;
+      if (!current) return c.json({ error: 'User not found' }, 404);
+
+      const displayName = body.displayName !== undefined ? body.displayName : current.display_name;
+      const playerName = body.playerName !== undefined ? body.playerName : current.player_name;
+      const email = body.email !== undefined ? body.email : current.email;
 
       if (email) {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -220,7 +227,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       await c.env.DB.prepare(`
         UPDATE users SET display_name = ?, player_name = ?, email = ?, updated_at = ?
         WHERE id = ?
-      `).bind(safe(displayName), safe(playerName), safe(email), now, userId).run();
+      `).bind(displayName || null, playerName || null, email || null, now, userId).run();
 
       return c.json({ success: true, message: 'Profile updated' });
     } catch (error) {
