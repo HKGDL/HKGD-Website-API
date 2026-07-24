@@ -39,31 +39,32 @@ export function registerSyncRoutes(app: Hono<{ Bindings: Bindings }>) {
       }
 
       let updatedCount = 0;
+      const updateStmts: any[] = [];
       for (const [name, levelInfo] of levelMap) {
         const aredlData = aredlDataMap.get(name);
         if (aredlData) {
-          await c.env.DB.prepare(`
+          updateStmts.push(c.env.DB.prepare(`
             UPDATE levels SET aredl_rank = ?, edel_enjoyment = ?, nlw_tier = ?, gddl_tier = ? WHERE id = ?
-          `).bind(aredlData.position || aredlData.rank, aredlData.edel_enjoyment ?? null, aredlData.nlw_tier ?? null, aredlData.gddl_tier ?? null, levelInfo.id).run();
+          `).bind(aredlData.position || aredlData.rank, aredlData.edel_enjoyment ?? null, aredlData.nlw_tier ?? null, aredlData.gddl_tier ?? null, levelInfo.id));
           updatedCount++;
         }
       }
-
-      const sortedLevels = await c.env.DB.prepare(
-        'SELECT id FROM levels WHERE aredl_rank IS NOT NULL AND (hidden IS NULL OR hidden != 1) ORDER BY aredl_rank ASC'
-      ).all();
-      let hkgdRank = 1;
-      for (const level of (sortedLevels.results || [])) {
-        await c.env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run();
-        hkgdRank++;
+      const BATCH = 80;
+      for (let i = 0; i < updateStmts.length; i += BATCH) {
+        try { await c.env.DB.batch(updateStmts.slice(i, i + BATCH)); } catch {}
       }
 
-      const unrankedLevels = await c.env.DB.prepare(
-        'SELECT id FROM levels WHERE aredl_rank IS NULL AND (hidden IS NULL OR hidden != 1) ORDER BY hkgd_rank ASC'
+      const allLevels = await c.env.DB.prepare(
+        'SELECT id FROM levels WHERE (hidden IS NULL OR hidden != 1) ORDER BY aredl_rank ASC, hkgd_rank ASC'
       ).all();
-      for (const level of (unrankedLevels.results || [])) {
-        await c.env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id).run();
+      let hkgdRank = 1;
+      const rankStmts: any[] = [];
+      for (const level of (allLevels.results || [])) {
+        rankStmts.push(c.env.DB.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id));
         hkgdRank++;
+      }
+      for (let i = 0; i < rankStmts.length; i += BATCH) {
+        try { await c.env.DB.batch(rankStmts.slice(i, i + BATCH)); } catch {}
       }
 
       await c.env.DB.prepare('UPDATE levels SET hkgd_rank = 0 WHERE hidden = 1').run();
