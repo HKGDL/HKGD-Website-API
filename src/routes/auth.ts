@@ -397,7 +397,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
         VALUES (?, ?, ?, ?, 0, ?)
       `).bind(tokenId, (user as any).id, token, expiresAt, now).run();
 
-      const siteUrl = c.env.SITE_URL || 'https://hkgdl.dpdns.org';
+      const siteUrl = c.env.SITE_URL || 'https://v2.hkgdl.dpdns.org';
       const resetUrl = `${siteUrl}/reset-password?token=${token}`;
 
       await sendPasswordResetEmail(apiKey, email, resetUrl, (user as any).username);
