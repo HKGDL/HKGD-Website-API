@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 import { Bindings } from './types';
-import { initUserTables, syncMotdFromDiscord, saveMotdTypes, syncAredlRankings } from './helpers/cron';
+import { initUserTables, syncMotdFromDiscord, saveMotdTypes } from './helpers/cron';
 import { registerAuthRoutes } from './routes/auth';
 import { registerAdminRoutes } from './routes/admin';
 import { registerLevelRoutes } from './routes/levels';
@@ -98,11 +98,6 @@ export default {
       return;
     }
 
-    try {
-      const updatedCount = await syncAredlRankings(env);
-      console.log(`[Cron] AREDL auto-sync completed: ${updatedCount} levels updated`);
-    } catch (e) {
-      console.error('[Cron] AREDL sync error:', e);
-    }
+    console.log('[Cron] AREDL sync skipped — api.aredl.net blocks Cloudflare Worker IPs. Use admin dashboard instead.');
   }
 };
