@@ -24,9 +24,8 @@ app.use('*', cors({
       'http://localhost:5173',
       'http://localhost:4173',
       'https://hkgd-website-frontend.hkgdl.workers.dev',
-      'https://hkgdl-frontend-v2.pages.dev',
-      'https://hkgd-v2.hkgdl.workers.dev',
-      'https://v2.hkgdl.dpdns.org',
+      'https://hkgd-frontend.hkgdl.workers.dev',
+      'https://hkgdl.dpdns.org',
     ];
     if (!origin) return origin;
     try {
