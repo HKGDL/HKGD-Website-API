@@ -3,6 +3,7 @@ import { Bindings, safe } from '../types';
 import { authenticateToken } from '../helpers/auth';
 import { computePoints } from '../helpers/utils';
 import { notifyContentChanged } from '../helpers/indexnow';
+import { renumberHkgdRanks } from '../helpers/cron';
 
 export function registerLevelRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.get('/api/levels', async (c) => {
@@ -134,11 +135,23 @@ export function registerLevelRoutes(app: Hono<{ Bindings: Bindings }>) {
       await c.env.DB.prepare('DELETE FROM claims WHERE level_id = ?').bind(id).run();
       await c.env.DB.prepare('DELETE FROM pending_submissions WHERE level_id = ?').bind(id).run();
       await c.env.DB.prepare('DELETE FROM levels WHERE id = ?').bind(id).run();
+      await renumberHkgdRanks(c.env.DB);
       notifyContentChanged(c.env);
       return c.json({ message: 'Level deleted successfully' });
     } catch (error) {
       console.error('Error deleting level:', error);
       return c.json({ error: 'Failed to delete level' }, 500);
+    }
+  });
+
+  app.post('/api/admin/renumber-ranks', authenticateToken, async (c) => {
+    try {
+      await renumberHkgdRanks(c.env.DB);
+      notifyContentChanged(c.env);
+      return c.json({ message: 'Ranks renumbered successfully' });
+    } catch (error) {
+      console.error('Error renumbering ranks:', error);
+      return c.json({ error: 'Failed to renumber ranks' }, 500);
     }
   });
 

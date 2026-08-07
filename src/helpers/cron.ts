@@ -106,6 +106,23 @@ export async function syncAredlRankings(env: Bindings): Promise<number> {
   return updatedCount;
 }
 
+export async function renumberHkgdRanks(db: D1Database): Promise<void> {
+  const allLevels = await db.prepare(
+    'SELECT id FROM levels WHERE (hidden IS NULL OR hidden != 1) ORDER BY aredl_rank ASC, hkgd_rank ASC'
+  ).all();
+  let hkgdRank = 1;
+  const stmts: any[] = [];
+  for (const level of (allLevels.results || [])) {
+    stmts.push(db.prepare('UPDATE levels SET hkgd_rank = ? WHERE id = ?').bind(hkgdRank, (level as any).id));
+    hkgdRank++;
+  }
+  const BATCH = 80;
+  for (let i = 0; i < stmts.length; i += BATCH) {
+    try { await db.batch(stmts.slice(i, i + BATCH)); } catch {}
+  }
+  await db.prepare('UPDATE levels SET hkgd_rank = 0 WHERE hidden = 1').run();
+}
+
 export async function initUserTables(db: D1Database): Promise<void> {
   const run = async (sql: string) => { try { await db.exec(sql); } catch (e) { console.error('DB init:', sql.slice(0, 60), e); } };
   await run("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, display_name TEXT, player_name TEXT, discord TEXT, email TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
