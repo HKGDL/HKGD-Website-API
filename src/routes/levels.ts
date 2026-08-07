@@ -129,7 +129,11 @@ export function registerLevelRoutes(app: Hono<{ Bindings: Bindings }>) {
 
   app.delete('/api/levels/:id', authenticateToken, async (c) => {
     try {
-      await c.env.DB.prepare('DELETE FROM levels WHERE id = ?').bind(c.req.param('id')).run();
+      const id = c.req.param('id');
+      await c.env.DB.prepare('DELETE FROM records WHERE level_id = ?').bind(id).run();
+      await c.env.DB.prepare('DELETE FROM claims WHERE level_id = ?').bind(id).run();
+      await c.env.DB.prepare('DELETE FROM pending_submissions WHERE level_id = ?').bind(id).run();
+      await c.env.DB.prepare('DELETE FROM levels WHERE id = ?').bind(id).run();
       notifyContentChanged(c.env);
       return c.json({ message: 'Level deleted successfully' });
     } catch (error) {
