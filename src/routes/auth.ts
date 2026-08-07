@@ -213,7 +213,7 @@ export function registerAuthRoutes(app: Hono<{ Bindings: Bindings }>) {
       if (!current) return c.json({ error: 'User not found' }, 404);
 
       const displayName = body.displayName !== undefined ? body.displayName : current.display_name;
-      const playerName = body.playerName !== undefined ? body.playerName : current.player_name;
+      const playerName = current.player_name;
       const email = body.email !== undefined ? body.email : current.email;
 
       if (email) {
