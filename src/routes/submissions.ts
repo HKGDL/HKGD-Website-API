@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { Bindings, safe } from '../types';
 import { createNotification, computePoints } from '../helpers/utils';
 import { notifyContentChanged } from '../helpers/indexnow';
+import { renumberHkgdRanks } from '../helpers/cron';
 
 export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.get('/api/pending-submissions', async (c) => {
@@ -155,6 +156,8 @@ export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
             INSERT INTO records (level_id, player, date, video_url, fps, points)
             VALUES (?, ?, ?, ?, ?, ?)
           `).bind(sub.level_id, recordData?.player || sub.submitted_by, sub.submitted_at, recordData?.videoUrl || null, recordData?.fps ? String(recordData.fps) : null, recordPoints).run();
+
+          await renumberHkgdRanks(c.env.DB);
 
           const submitter = sub.submitted_by;
           if (submitter) {
