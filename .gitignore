@@ -17,3 +17,6 @@ Thumbs.db
 
 # Database
 *.db
+
+# Certificates (secrets — never commit private keys)
+certs/
