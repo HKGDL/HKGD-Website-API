@@ -8,10 +8,10 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.get('/api/platformer-levels', async (c) => {
     try {
       const levels = await c.env.DB.prepare(`
-        SELECT id, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId,
+        SELECT id, hkgd_plat_rank as hkgdPlatRank, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId,
           description, thumbnail, song_id as songId, song_name as songName, tags,
           date_added as dateAdded, pack, difficulty
-        FROM platformer_levels ORDER BY hkgd_rank ASC
+        FROM platformer_levels ORDER BY hkgd_plat_rank ASC, hkgd_rank ASC
       `).all();
 
       const allRecords = await c.env.DB.prepare(`
@@ -39,7 +39,7 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.get('/api/platformer-levels/:id', async (c) => {
     try {
       const level = await c.env.DB.prepare(`
-        SELECT id, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId,
+        SELECT id, hkgd_plat_rank as hkgdPlatRank, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId,
           description, thumbnail, song_id as songId, song_name as songName, tags,
           date_added as dateAdded, pack, difficulty
         FROM platformer_levels WHERE id = ?
@@ -66,9 +66,9 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.get('/api/platformer-demons', async (c) => {
     try {
       const levels = await c.env.DB.prepare(`
-        SELECT id, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId, description, thumbnail,
+        SELECT id, hkgd_plat_rank as hkgdPlatRank, hkgd_rank as hkgdRank, name, creator, verifier, level_id as levelId, description, thumbnail,
           song_id as songId, song_name as songName, tags, date_added as dateAdded, pack, difficulty
-        FROM platformer_levels ORDER BY hkgd_rank ASC
+        FROM platformer_levels ORDER BY hkgd_plat_rank ASC, hkgd_rank ASC
       `).all();
       return c.json({ demons: levels.results || [] });
     } catch (error) {
@@ -80,11 +80,11 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.post('/api/platformer-levels', authenticateToken, async (c) => {
     try {
       const data = await c.req.json();
-      const { id, hkgdRank, name, creator, verifier, levelId, description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty } = data;
+      const { id, hkgdPlatRank, hkgdRank, name, creator, verifier, levelId, description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty } = data;
       await c.env.DB.prepare(`
-        INSERT INTO platformer_levels (id, hkgd_rank, name, creator, verifier, level_id, description, thumbnail, song_id, song_name, tags, date_added, pack, difficulty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(safe(id), safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
+        INSERT INTO platformer_levels (id, hkgd_plat_rank, hkgd_rank, name, creator, verifier, level_id, description, thumbnail, song_id, song_name, tags, date_added, pack, difficulty)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(safe(id), safe(hkgdPlatRank ?? hkgdRank), safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
         safe(description), safe(thumbnail), safe(songId), safe(songName),
         JSON.stringify(tags || []), safe(dateAdded), safe(pack), safe(difficulty)).run();
       notifyContentChanged(c.env);
@@ -98,12 +98,12 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.put('/api/platformer-levels/:id', authenticateToken, async (c) => {
     try {
       const data = await c.req.json();
-      const { hkgdRank, name, creator, verifier, levelId, description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty } = data;
+      const { hkgdPlatRank, hkgdRank, name, creator, verifier, levelId, description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty } = data;
       await c.env.DB.prepare(`
-        UPDATE platformer_levels SET hkgd_rank = ?, name = ?, creator = ?, verifier = ?, level_id = ?,
+        UPDATE platformer_levels SET hkgd_plat_rank = ?, hkgd_rank = ?, name = ?, creator = ?, verifier = ?, level_id = ?,
           description = ?, thumbnail = ?, song_id = ?, song_name = ?, tags = ?, date_added = ?, pack = ?, difficulty = ?
         WHERE id = ?
-      `).bind(safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
+      `).bind(safe(hkgdPlatRank ?? hkgdRank), safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
         safe(description), safe(thumbnail), safe(songId), safe(songName),
         JSON.stringify(tags || []), safe(dateAdded), safe(pack), safe(difficulty), c.req.param('id')).run();
       notifyContentChanged(c.env);
@@ -131,10 +131,10 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
     try {
       const body = await c.req.json();
       let points: number | null = null;
-      const level = await c.env.DB.prepare('SELECT id, hkgd_rank FROM platformer_levels WHERE id = ?').bind(c.req.param('levelId')).first();
-      if (level && (level as any).hkgd_rank) {
-        const totalLevelsResult = await c.env.DB.prepare('SELECT COUNT(*) as count FROM platformer_levels WHERE hkgd_rank IS NOT NULL').first();
-        points = computePoints((level as any).hkgd_rank, (totalLevelsResult as any)?.count || 0);
+      const level = await c.env.DB.prepare('SELECT id, hkgd_plat_rank FROM platformer_levels WHERE id = ?').bind(c.req.param('levelId')).first();
+      if (level && (level as any).hkgd_plat_rank) {
+        const totalLevelsResult = await c.env.DB.prepare('SELECT COUNT(*) as count FROM platformer_levels WHERE hkgd_plat_rank IS NOT NULL').first();
+        points = computePoints((level as any).hkgd_plat_rank, (totalLevelsResult as any)?.count || 0);
       }
 
       const result = await c.env.DB.prepare(`
@@ -237,7 +237,7 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
 
       for (const levelData of levels) {
         try {
-          const { name, levelId, hkgdRank, creator, records } = levelData;
+          const { name, levelId, hkgdRank, hkgdPlatRank, creator, records } = levelData;
           const id = `plat-${levelId}`;
           const existing = await c.env.DB.prepare('SELECT id FROM platformer_levels WHERE id = ?').bind(id).first();
           if (existing) { results.push({ name, status: 'skipped', reason: 'already exists' }); continue; }
@@ -249,9 +249,9 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
           } catch {}
 
           await c.env.DB.prepare(`
-            INSERT INTO platformer_levels (id, hkgd_rank, name, creator, verifier, level_id, thumbnail, tags, date_added)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(id, hkgdRank, details?.cache_level_name || name, details?.cache_username || creator || 'Unknown',
+            INSERT INTO platformer_levels (id, hkgd_plat_rank, hkgd_rank, name, creator, verifier, level_id, thumbnail, tags, date_added)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(id, hkgdPlatRank ?? hkgdRank, hkgdRank, details?.cache_level_name || name, details?.cache_username || creator || 'Unknown',
             details?.cache_username || creator || 'Unknown', levelId,
             details?.cache_level_string_available ? `https://levelthumbs.prevter.me/thumbnail/${levelId}` : null,
             JSON.stringify(['Platformer']), new Date().toISOString()).run();
@@ -278,7 +278,7 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
 
   app.post('/api/platformer-levels/sync', authenticateToken, async (c: any) => {
     try {
-      const levels = await c.env.DB.prepare('SELECT id, level_id, name, hkgd_rank FROM platformer_levels ORDER BY hkgd_rank ASC').all();
+      const levels = await c.env.DB.prepare('SELECT id, level_id, name, hkgd_plat_rank FROM platformer_levels ORDER BY hkgd_plat_rank ASC').all();
       let updated = 0;
       for (const level of (levels.results || [])) {
         try {

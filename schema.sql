@@ -596,6 +596,7 @@ INSERT INTO "player_mappings" ("id","game_name","db_name","account_id","created_
 CREATE TABLE platformer_levels (
     id TEXT PRIMARY KEY,
     hkgd_rank INTEGER,
+    hkgd_plat_rank INTEGER,
     pemonlist_rank INTEGER,
     name TEXT NOT NULL,
     creator TEXT NOT NULL,
@@ -687,3 +688,4 @@ CREATE INDEX idx_player_mappings_db_name ON player_mappings(db_name);
 CREATE INDEX idx_platformer_records_level_id ON platformer_records(level_id);
 CREATE INDEX idx_pending_submissions_platformer ON pending_submissions(is_platformer);
 CREATE INDEX idx_pending_submissions_admin_decides ON pending_submissions(admin_decides_difficulty);
+UPDATE platformer_levels SET hkgd_plat_rank = hkgd_rank WHERE hkgd_plat_rank IS NULL;
