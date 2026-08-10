@@ -73,7 +73,7 @@ export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
   app.put('/api/pending-submissions/:id', async (c) => {
     try {
       const id = c.req.param('id');
-      const { status, adminNotes } = await c.req.json();
+      const { status, adminNotes, hkgdPlatRank } = await c.req.json();
       if (!['pending', 'approved', 'rejected'].includes(status)) return c.json({ error: 'Invalid status' }, 400);
 
       await c.env.DB.prepare('UPDATE pending_submissions SET status = ?, admin_notes = ? WHERE id = ?').bind(status, adminNotes || null, id).run();
@@ -82,7 +82,7 @@ export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
         const sub = await c.env.DB.prepare('SELECT * FROM pending_submissions WHERE id = ?').bind(id).first() as any;
         if (sub) {
           if (sub.is_platformer === 1) {
-            await approvePlatformerSubmission(c.env.DB, sub);
+            await approvePlatformerSubmission(c.env.DB, sub, hkgdPlatRank ?? null);
           } else {
             let level = await c.env.DB.prepare('SELECT id FROM levels WHERE level_id = ?').bind(sub.level_id).first();
           if (!level) {
@@ -198,7 +198,7 @@ export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
   });
 }
 
-async function approvePlatformerSubmission(db: D1Database, sub: any) {
+async function approvePlatformerSubmission(db: D1Database, sub: any, rank: number | null = null) {
   let level = await db.prepare('SELECT id FROM platformer_levels WHERE level_id = ?').bind(sub.level_id).first() as any;
   if (!level) {
     const now = new Date().toISOString().split('T')[0].replace(/-/g, '/');
@@ -220,9 +220,11 @@ async function approvePlatformerSubmission(db: D1Database, sub: any) {
     const platId = `plat-${sub.level_id}`;
     await db.prepare(`
       INSERT INTO platformer_levels (id, hkgd_plat_rank, hkgd_rank, name, creator, verifier, level_id, thumbnail, tags, date_added)
-      VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(platId, sub.level_name, creator, creator, sub.level_id, thumbnail, JSON.stringify(['Platformer']), now).run();
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(platId, rank, sub.level_name, creator, creator, sub.level_id, thumbnail, JSON.stringify(['Platformer']), now).run();
     level = { id: platId };
+  } else if (rank != null) {
+    await db.prepare('UPDATE platformer_levels SET hkgd_plat_rank = ? WHERE id = ?').bind(rank, level.id).run();
   }
 
   const recordData = sub.record_data ? (typeof sub.record_data === 'string' ? JSON.parse(sub.record_data) : sub.record_data) : null;
