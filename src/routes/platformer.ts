@@ -83,10 +83,14 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
       const { id, hkgdPlatRank, hkgdRank, name, creator, verifier, levelId, description, thumbnail, songId, songName, tags, dateAdded, pack, difficulty } = data;
       await c.env.DB.prepare(`
         INSERT INTO platformer_levels (id, hkgd_plat_rank, hkgd_rank, name, creator, verifier, level_id, description, thumbnail, song_id, song_name, tags, date_added, pack, difficulty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(safe(id), safe(hkgdPlatRank ?? hkgdRank), safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
+        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(safe(id), safe(hkgdRank), safe(name), safe(creator), safe(verifier), safe(levelId),
         safe(description), safe(thumbnail), safe(songId), safe(songName),
         JSON.stringify(tags || []), safe(dateAdded), safe(pack), safe(difficulty)).run();
+      const desiredRank = hkgdPlatRank != null && hkgdPlatRank !== '' ? parseInt(hkgdPlatRank) : null;
+      if (desiredRank != null && Number.isFinite(desiredRank) && desiredRank >= 1) {
+        await applyRankWithShift(c.env.DB, safe(id), desiredRank);
+      }
       notifyContentChanged(c.env);
       return c.json({ id, message: 'Platformer level created successfully' }, 201);
     } catch (error) {
@@ -122,6 +126,30 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
     } catch (error) {
       console.error('Error deleting platformer level:', error);
       return c.json({ error: 'Failed to delete platformer level' }, 500);
+    }
+  });
+
+  // ── Platformer Rank Placement (insert with shift) ────
+
+  app.post('/api/platformer-levels/:id/rank', authenticateToken, async (c) => {
+    try {
+      const id = c.req.param('id');
+      const body = await c.req.json();
+      const raw = body.rank;
+      const newRank = raw == null || raw === '' ? null : parseInt(raw);
+      if (newRank != null && (!Number.isFinite(newRank) || newRank < 1)) return c.json({ error: 'Rank must be a positive integer or empty' }, 400);
+
+      const level = await c.env.DB.prepare('SELECT id, hkgd_plat_rank FROM platformer_levels WHERE id = ?').bind(id).first() as any;
+      if (!level) return c.json({ error: 'Platformer level not found' }, 404);
+      const oldRank = level.hkgd_plat_rank != null ? Number(level.hkgd_plat_rank) : null;
+      if (oldRank === newRank) return c.json({ message: 'Rank unchanged' });
+
+      await applyRankWithShift(c.env.DB, id, newRank);
+      notifyContentChanged(c.env);
+      return c.json({ message: newRank == null ? 'Level unranked (shifted).' : `Rank placed at ${newRank} (shifted).` });
+    } catch (error) {
+      console.error('Error placing platformer rank:', error);
+      return c.json({ error: 'Failed to place platformer rank', details: error instanceof Error ? error.message : 'Unknown error' }, 500);
     }
   });
 
@@ -303,4 +331,25 @@ export function registerPlatformerRoutes(app: Hono<{ Bindings: Bindings }>) {
       return c.json({ error: 'Failed to sync platformer levels' }, 500);
     }
   });
+}
+
+// Place a platformer level at a rank with insert semantics: all levels at/above
+// the target rank shift down by one, and the moved level's old slot is closed.
+async function applyRankWithShift(db: D1Database, id: string, newRank: number | null) {
+  const level = await db.prepare('SELECT hkgd_plat_rank FROM platformer_levels WHERE id = ?').bind(id).first() as any;
+  if (!level) return;
+  const oldRank = level.hkgd_plat_rank != null ? Number(level.hkgd_plat_rank) : null;
+  if (oldRank === newRank) return;
+
+  const stmts: D1PreparedStatement[] = [];
+  if (oldRank != null) {
+    stmts.push(db.prepare('UPDATE platformer_levels SET hkgd_plat_rank = hkgd_plat_rank - 1 WHERE hkgd_plat_rank > ? AND id != ?').bind(oldRank, id));
+  }
+  if (newRank != null) {
+    stmts.push(db.prepare('UPDATE platformer_levels SET hkgd_plat_rank = hkgd_plat_rank + 1 WHERE hkgd_plat_rank >= ? AND id != ?').bind(newRank, id));
+    stmts.push(db.prepare('UPDATE platformer_levels SET hkgd_plat_rank = ? WHERE id = ?').bind(newRank, id));
+  } else {
+    stmts.push(db.prepare('UPDATE platformer_levels SET hkgd_plat_rank = NULL WHERE id = ?').bind(id));
+  }
+  await db.batch(stmts);
 }
