@@ -81,7 +81,10 @@ export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
       if (status === 'approved') {
         const sub = await c.env.DB.prepare('SELECT * FROM pending_submissions WHERE id = ?').bind(id).first() as any;
         if (sub) {
-          let level = await c.env.DB.prepare('SELECT id FROM levels WHERE level_id = ?').bind(sub.level_id).first();
+          if (sub.is_platformer === 1) {
+            await approvePlatformerSubmission(c.env.DB, sub);
+          } else {
+            let level = await c.env.DB.prepare('SELECT id FROM levels WHERE level_id = ?').bind(sub.level_id).first();
           if (!level) {
             const now = new Date().toISOString().split('T')[0];
             let creator = 'Unknown';
@@ -170,6 +173,7 @@ export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
             }
           }
         }
+        }
       } else if (status === 'rejected') {
         const sub = await c.env.DB.prepare('SELECT * FROM pending_submissions WHERE id = ?').bind(id).first() as any;
         if (sub) {
@@ -192,4 +196,52 @@ export function registerSubmissionRoutes(app: Hono<{ Bindings: Bindings }>) {
       return c.json({ error: 'Failed to update submission' }, 500);
     }
   });
+}
+
+async function approvePlatformerSubmission(db: D1Database, sub: any) {
+  let level = await db.prepare('SELECT id FROM platformer_levels WHERE level_id = ?').bind(sub.level_id).first() as any;
+  if (!level) {
+    const now = new Date().toISOString().split('T')[0].replace(/-/g, '/');
+    let creator = 'Unknown';
+    let thumbnail = null;
+    try {
+      const hgRes = await fetch(
+        `https://history.geometrydash.eu/api/v1/search/level/advanced/?query=${sub.level_id}&limit=1&filter=online_id%3D${sub.level_id}`
+      );
+      if (hgRes.ok) {
+        const hgData = await hgRes.json() as any;
+        const hit = hgData.hits?.[0];
+        if (hit) {
+          creator = hit.cache_username || creator;
+          if (hit.cache_level_string_available) thumbnail = `https://levelthumbs.prevter.me/thumbnail/${sub.level_id}`;
+        }
+      }
+    } catch {}
+    const platId = `plat-${sub.level_id}`;
+    await db.prepare(`
+      INSERT INTO platformer_levels (id, hkgd_plat_rank, hkgd_rank, name, creator, verifier, level_id, thumbnail, tags, date_added)
+      VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(platId, sub.level_name, creator, creator, sub.level_id, thumbnail, JSON.stringify(['Platformer']), now).run();
+    level = { id: platId };
+  }
+
+  const recordData = sub.record_data ? (typeof sub.record_data === 'string' ? JSON.parse(sub.record_data) : sub.record_data) : null;
+  const rawDate = recordData?.date || (sub.submitted_at ? sub.submitted_at.split('T')[0] : new Date().toISOString().split('T')[0]);
+  const recordDate = String(rawDate).replace(/-/g, '/');
+
+  await db.prepare(`
+    INSERT INTO platformer_records (level_id, player, date, video_url, fps)
+    VALUES (?, ?, ?, ?, ?)
+  `).bind(level.id, recordData?.player || sub.submitted_by, recordDate, recordData?.videoUrl || null, recordData?.fps ? String(recordData.fps) : null).run();
+
+  const submitter = sub.submitted_by;
+  if (submitter) {
+    const user = await db.prepare('SELECT id FROM users WHERE player_name = ? OR username = ?').bind(submitter, submitter).first() as any;
+    if (user) {
+      await createNotification(db, user.id, 'submission_approved',
+        'Platformer Record Accepted',
+        `Your platformer record on ${sub.level_name} has been accepted! An admin will place it on the list.`
+      );
+    }
+  }
 }
